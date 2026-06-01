@@ -405,7 +405,7 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 	a.remoteSFTP = sftpClient
 	a.remotePath = remotePath
 	a.isRemote = true
-	a.workspace = cfg.Name + ":" + remotePath
+	a.workspace = workspaceName(cfg.Name, remotePath)
 	a.remoteSSHCfg = tCfg
 	a.scannedRemoteEntries = entries
 	a.scannedFiles = entriesToPaths(entries)
@@ -436,7 +436,7 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 	// Save entry
 	if a.cfgStore != nil {
 		a.cfgStore.SaveRemoteWorkspace(config.RemoteWorkspaceEntry{
-			Name:       cfg.Name + ":" + remotePath,
+			Name:       workspaceName(cfg.Name, remotePath),
 			Host:       cfg.Host,
 			Port:       cfg.Port,
 			User:       cfg.User,
@@ -588,22 +588,83 @@ func (a *App) readRemoteFileRaw(fullPath string) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
-// remoteInitSnapshots copies all text files to remote .warp-snapshots.
+// remoteInitSnapshots copies text files to remote .warp-snapshots using server-side
+// copy via SSH exec. Falls back to per-file SFTP if SSH exec is unavailable.
 func (a *App) remoteInitSnapshots(entries []remoteFileEntry) error {
+	var textPaths []string
 	for _, e := range entries {
-		if a.remoteIsBinary(e.path) {
+		ext := strings.ToLower(path.Ext(e.path))
+		if !snapshot.IsTextFile(ext, nil) {
 			continue
 		}
-		data, err := a.readRemoteFile(e.path)
-		if err != nil {
-			continue
-		}
-		if err := a.remoteWriteSnapshot(e.path, data); err != nil {
-			return err
-		}
+		textPaths = append(textPaths, e.path)
 		a.snapEng.SetFileHash(e.path, e.fingerprint())
 	}
+
+	if len(textPaths) == 0 {
+		return a.remoteSaveManifest()
+	}
+
+	runtime.EventsEmit(a.ctx, "snapshot-progress", map[string]interface{}{
+		"phase": "start", "total": len(textPaths), "current": 0,
+	})
+
+	chunkSize := 1000
+	for i := 0; i < len(textPaths); i += chunkSize {
+		end := i + chunkSize
+		if end > len(textPaths) {
+			end = len(textPaths)
+		}
+		chunk := textPaths[i:end]
+		if err := a.remoteExecCopyChunk(chunk); err != nil {
+			for _, p := range chunk {
+				data, err := a.readRemoteFile(p)
+				if err != nil {
+					continue
+				}
+				if err := a.remoteWriteSnapshot(p, data); err != nil {
+					return err
+				}
+			}
+		}
+		runtime.EventsEmit(a.ctx, "snapshot-progress", map[string]interface{}{
+			"phase": "progress", "total": len(textPaths), "current": end,
+		})
+	}
+
 	return a.remoteSaveManifest()
+}
+
+// remoteExecCopyChunk copies files on the remote server via SSH exec with stdin piping.
+func (a *App) remoteExecCopyChunk(paths []string) error {
+	sess, err := a.remoteClient.NewSession()
+	if err != nil {
+		return err
+	}
+	defer sess.Close()
+
+	script := "cd " + shellQuote(a.remotePath) + " || exit 1\n" +
+		"mkdir -p .warp-snapshots || exit 1\n" +
+		"while IFS= read -r f; do\n" +
+		"  [ -z \"$f\" ] && continue\n" +
+		"  d=\".warp-snapshots/$(dirname \"$f\")\"\n" +
+		"  [ \"$d\" != \".warp-snapshots/.\" ] && mkdir -p \"$d\"\n" +
+		"  cp \"$f\" \".warp-snapshots/$f\" || exit 1\n" +
+		"done\n"
+
+	sess.Stdin = strings.NewReader(strings.Join(paths, "\n") + "\n")
+	return sess.Run(script)
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
+func workspaceName(cfgName, remotePath string) string {
+	if strings.HasSuffix(cfgName, ":"+remotePath) {
+		return cfgName
+	}
+	return cfgName + ":" + remotePath
 }
 
 // remoteChangedFiles returns changes with line stats.

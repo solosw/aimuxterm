@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { GetSSHConfigs, OpenRemoteWorkspace } from '../../wailsjs/go/main/App'
 import { useWorkspaceStore } from '../stores/workspace'
 
@@ -7,6 +7,14 @@ const emit = defineEmits<{ (e: 'close'): void }>()
 const ws = useWorkspaceStore()
 
 const savedConfigs = ref<any[]>([])
+const syncButtonText = computed(() => {
+  if (!syncing.value) return '同步并打开'
+  const p = ws.snapshotProgress
+  if (p && p.total > 0) {
+    return `正在初始化快照 (${p.current}/${p.total})...`
+  }
+  return '同步中...'
+})
 const selectedCfg = ref<any>(null)
 const remotePath = ref('')
 const syncing = ref(false)
@@ -76,7 +84,7 @@ onUnmounted(() => document.removeEventListener('keydown', onKeydown))
       <div class="dialog-footer">
         <button class="btn-cancel" @click="emit('close')">取消</button>
         <button class="btn-go" :disabled="syncing" @click="connect">
-          {{ syncing ? '同步中...' : '同步并打开' }}
+          {{ syncButtonText }}
         </button>
       </div>
     </div>

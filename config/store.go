@@ -208,7 +208,7 @@ func (s *Store) SaveRemoteWorkspace(item RemoteWorkspaceEntry) error {
 	items, _ := s.LoadRemoteWorkspaces()
 	found := false
 	for i, it := range items {
-		if it.Name == item.Name {
+		if it.Host == item.Host && it.User == item.User && it.RemotePath == item.RemotePath {
 			items[i] = item
 			found = true
 			break

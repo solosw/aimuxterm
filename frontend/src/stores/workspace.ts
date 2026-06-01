@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { SelectWorkspace, OpenWorkspace, GetWorkspaceInfo, GetWorkspaceHistory, RemoveWorkspaceFromHistory, OpenInNewWindow, RefreshLocalWorkspace, RefreshRemoteWorkspace, GetRemoteWorkspaces, RemoveRemoteWorkspace, OpenRemoteWorkspace, ListRemoteDir } from '../../wailsjs/go/main/App'
 import { main, config } from '../../wailsjs/go/models'
+import { EventsOn } from '../../wailsjs/runtime/runtime'
 import { useFileChangesStore } from './fileChanges'
 
 export const useWorkspaceStore = defineStore('workspace', () => {
@@ -13,6 +14,15 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   const previewFiles = ref<string[]>([])
   const activePreviewFile = ref<string | null>(null)
   const showStartupPicker = ref(false)
+  const snapshotProgress = ref<{ total: number; current: number } | null>(null)
+
+  EventsOn('snapshot-progress', (data: any) => {
+    if (data?.phase === 'start' || data?.phase === 'progress') {
+      snapshotProgress.value = { total: data.total, current: data.current }
+    } else {
+      snapshotProgress.value = null
+    }
+  })
 
   function openPreviewFile(path: string) {
     if (!previewFiles.value.includes(path)) previewFiles.value.push(path)
@@ -68,6 +78,6 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     previewFiles, activePreviewFile, openPreviewFile, closePreviewFile,
     loadHistory, selectWorkspace, openWorkspace, openRemoteWorkspace, removeRemote,
     openInNewWindow, removeFromHistory, refresh, refreshLocal, refreshRemote, loadRemoteDir,
-    showStartupPicker
+    snapshotProgress, showStartupPicker
   }
 })
