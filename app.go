@@ -110,10 +110,11 @@ type App struct {
 	isRemote         bool
 
 	// Remote connection (lifetime = workspace session)
-	remoteClient *ssh.Client
-	remoteSFTP   *sftp.Client
-	remotePath   string
-	remoteSSHCfg terminal.SSHConfig // saved for auto-creating SSH terminals
+	remoteClient     *ssh.Client
+	remoteSFTP       *sftp.Client
+	remotePath       string
+	remoteSSHCfg     terminal.SSHConfig // saved for auto-creating SSH terminals
+	remotePollCancel context.CancelFunc
 
 	snapEng  *snapshot.Engine
 	termMgr  *terminal.Manager
@@ -184,7 +185,38 @@ func ensureGitignore(workspace string) {
 	}
 }
 
+func (a *App) remoteEnsureGitignore() {
+	giPath := path.Join(a.remotePath, ".gitignore")
+	data, err := a.readRemoteFileRaw(giPath)
+	if err != nil {
+		f, ferr := a.remoteSFTP.Create(giPath)
+		if ferr != nil {
+			return
+		}
+		defer f.Close()
+		f.Write([]byte(".warp-snapshots\n"))
+		return
+	}
+	content := string(data)
+	if !strings.Contains(content, ".warp-snapshots") {
+		if !strings.HasSuffix(content, "\n") {
+			content += "\n"
+		}
+		content += ".warp-snapshots\n"
+		f, ferr := a.remoteSFTP.Create(giPath)
+		if ferr != nil {
+			return
+		}
+		defer f.Close()
+		f.Write([]byte(content))
+	}
+}
+
 func (a *App) closeRemote() {
+	if a.remotePollCancel != nil {
+		a.remotePollCancel()
+		a.remotePollCancel = nil
+	}
 	if a.remoteSFTP != nil {
 		a.remoteSFTP.Close()
 		a.remoteSFTP = nil
@@ -419,6 +451,8 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 		return nil, fmt.Errorf("创建远程快照目录失败: %w", err)
 	}
 
+	a.remoteEnsureGitignore()
+
 	// Load manifest from remote; if absent init fresh
 	if err := a.remoteLoadManifest(); err != nil {
 		sftpClient.Close()
@@ -446,6 +480,10 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 
 	info := a.makeWorkspaceInfo()
 	a.emitChanges()
+		pollCtx, cancel := context.WithCancel(a.ctx)
+		a.remotePollCancel = cancel
+		go a.remotePollLoop(pollCtx)
+
 	return info, nil
 }
 
@@ -665,6 +703,52 @@ func workspaceName(cfgName, remotePath string) string {
 		return cfgName
 	}
 	return cfgName + ":" + remotePath
+}
+
+// remotePollLoop periodically re-scans the remote directory for changes.
+func (a *App) remotePollLoop(ctx context.Context) {
+	ticker := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.remotePoll()
+		}
+	}
+}
+
+func (a *App) remotePoll() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.isRemote || a.remoteSFTP == nil {
+		return
+	}
+	entries, err := a.listRemoteFiles(a.remoteSFTP, a.remotePath)
+	if err != nil {
+		return
+	}
+	oldFps := entriesToFingerprints(a.scannedRemoteEntries)
+	newFps := entriesToFingerprints(entries)
+	if fingerprintsEqual(oldFps, newFps) {
+		return
+	}
+	a.scannedRemoteEntries = entries
+	a.scannedFiles = entriesToPaths(entries)
+	a.emitChanges()
+}
+
+func fingerprintsEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // remoteChangedFiles returns changes with line stats.
