@@ -14,7 +14,8 @@ const snapDir = ".warp-snapshots"
 
 // Manifest maps relative file paths to their content hashes.
 type Manifest struct {
-	Files map[string]string `json:"files"`
+	Files        map[string]string `json:"files"`
+	Fingerprints map[string]string `json:"fingerprints,omitempty"`
 }
 
 // Engine manages file snapshots for a workspace.
@@ -29,7 +30,10 @@ func NewEngine(workspace string) *Engine {
 	return &Engine{
 		workspace: workspace,
 		snapPath:  filepath.Join(workspace, snapDir),
-		manifest:  &Manifest{Files: make(map[string]string)},
+		manifest: &Manifest{
+			Files:        make(map[string]string),
+			Fingerprints: make(map[string]string),
+		},
 	}
 }
 
@@ -53,7 +57,7 @@ func (e *Engine) AcceptAll(files []string) error {
 			// If file was deleted, remove from manifest
 			if os.IsNotExist(err) {
 				delete(e.manifest.Files, f)
-				os.Remove(e.snapFilePath(f))
+				delete(e.manifest.Fingerprints, f)
 				continue
 			}
 			return err
@@ -67,7 +71,7 @@ func (e *Engine) AcceptFile(path string) error {
 	if err := e.snapshotFile(path); err != nil {
 		if os.IsNotExist(err) {
 			delete(e.manifest.Files, path)
-			os.Remove(e.snapFilePath(path))
+			delete(e.manifest.Fingerprints, path)
 			return e.saveManifest()
 		}
 		return err
@@ -87,13 +91,12 @@ func (e *Engine) RevertAll(files []string) error {
 
 // RevertFile restores a single file from its snapshot.
 func (e *Engine) RevertFile(path string) error {
-	snapFile := e.snapFilePath(path)
 	if _, ok := e.manifest.Files[path]; !ok {
 		// File was newly created, delete it
 		e.deleteFromManifest(path)
 		return os.Remove(filepath.Join(e.workspace, path))
 	}
-	data, err := os.ReadFile(snapFile)
+	data, err := e.readSnapshotData(path)
 	if err != nil {
 		return fmt.Errorf("read snapshot: %w", err)
 	}
@@ -106,7 +109,7 @@ func (e *Engine) RevertFile(path string) error {
 
 // Diff returns the diff between current file and snapshot.
 func (e *Engine) Diff(path string) (oldContent, newContent string, err error) {
-	oldData, err := os.ReadFile(e.snapFilePath(path))
+	oldData, err := e.readSnapshotData(path)
 	if err != nil {
 		oldContent = "" // new file
 	} else {
@@ -136,70 +139,26 @@ func (e *Engine) ChangedFiles(currentFiles []string) []FileChange {
 	for _, f := range currentFiles {
 		oldHash, existed := e.manifest.Files[f]
 		if !existed {
-			adds, _ := e.diffStats("", filepath.Join(e.workspace, f))
+			adds, _ := DiffStats(nil, nil)
 			changes = append(changes, FileChange{Path: f, Status: StatusAdded, Additions: adds})
 		} else {
 			newHash := hashFile(filepath.Join(e.workspace, f))
 			if newHash != oldHash {
-				adds, dels := e.diffStats(e.snapFilePath(f), filepath.Join(e.workspace, f))
+				oldData, _ := e.readSnapshotData(f)
+				newData, _ := os.ReadFile(filepath.Join(e.workspace, f))
+				adds, dels := DiffStats(oldData, newData)
 				changes = append(changes, FileChange{Path: f, Status: StatusModified, Additions: adds, Deletions: dels})
 			}
 		}
 	}
 	for f := range e.manifest.Files {
 		if !currentSet[f] {
-			_, dels := e.diffStats(e.snapFilePath(f), "")
+			oldData, _ := e.readSnapshotData(f)
+			_, dels := DiffStats(oldData, nil)
 			changes = append(changes, FileChange{Path: f, Status: StatusDeleted, Deletions: dels})
 		}
 	}
 	return changes
-}
-
-// diffStats reads oldPath and newPath, returns (additions, deletions) line counts.
-// Pass empty string for a non-existent path (new or deleted file).
-func (e *Engine) diffStats(oldPath, newPath string) (additions, deletions int) {
-	oldLines := readLines(oldPath)
-	newLines := readLines(newPath)
-
-	oldCount := make(map[string]int, len(oldLines))
-	for _, l := range oldLines {
-		oldCount[l]++
-	}
-	newCount := make(map[string]int, len(newLines))
-	for _, l := range newLines {
-		newCount[l]++
-	}
-
-	// Lines in new but not (fully) in old = additions
-	for l, n := range newCount {
-		o := oldCount[l]
-		if n > o {
-			additions += n - o
-		}
-	}
-	// Lines in old but not (fully) in new = deletions
-	for l, o := range oldCount {
-		n := newCount[l]
-		if o > n {
-			deletions += o - n
-		}
-	}
-	return
-}
-
-func readLines(path string) []string {
-	if path == "" {
-		return nil
-	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	text := strings.TrimSuffix(string(data), "\n")
-	if text == "" {
-		return nil
-	}
-	return strings.Split(text, "\n")
 }
 
 // LoadManifest loads existing manifest from disk.
@@ -207,12 +166,12 @@ func (e *Engine) LoadManifest() error {
 	data, err := os.ReadFile(filepath.Join(e.snapPath, "manifest.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
-			e.manifest = &Manifest{Files: make(map[string]string)}
+			e.manifest = &Manifest{Files: make(map[string]string), Fingerprints: make(map[string]string)}
 			return nil
 		}
 		return err
 	}
-	e.manifest = &Manifest{}
+	e.manifest = &Manifest{Files: make(map[string]string), Fingerprints: make(map[string]string)}
 	return json.Unmarshal(data, e.manifest)
 }
 
@@ -225,14 +184,11 @@ func (e *Engine) snapshotFile(relPath string) error {
 	if !IsTextFile(strings.ToLower(filepath.Ext(relPath)), FirstBytes(data)) {
 		return fmt.Errorf("skip binary file")
 	}
-	dst := e.snapFilePath(relPath)
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+	h := hashBytes(data)
+	if err := e.writeObject(h, data); err != nil {
 		return err
 	}
-	if err := os.WriteFile(dst, data, 0644); err != nil {
-		return err
-	}
-	e.manifest.Files[relPath] = hashBytes(data)
+	e.manifest.Files[relPath] = h
 	return nil
 }
 
@@ -252,12 +208,48 @@ func (e *Engine) saveManifest() error {
 	return os.WriteFile(filepath.Join(e.snapPath, "manifest.json"), data, 0644)
 }
 
+func (e *Engine) objectsDir() string  { return filepath.Join(e.snapPath, "objects") }
+func (e *Engine) objectPath(hash string) string {
+	if len(hash) < 4 {
+		return ""
+	}
+	return filepath.Join(e.objectsDir(), hash[:2], hash[2:])
+}
+func (e *Engine) readObject(hash string) ([]byte, error) {
+	return os.ReadFile(e.objectPath(hash))
+}
+func (e *Engine) writeObject(hash string, data []byte) error {
+	objPath := e.objectPath(hash)
+	if objPath == "" {
+		return fmt.Errorf("invalid hash")
+	}
+	if _, err := os.Stat(objPath); err == nil {
+		return nil // already stored, dedup
+	}
+	if err := os.MkdirAll(filepath.Dir(objPath), 0755); err != nil {
+		return err
+	}
+	return os.WriteFile(objPath, data, 0644)
+}
+
+// snapFilePath returns the old-style path-based snapshot location (for backward compat).
 func (e *Engine) snapFilePath(relPath string) string {
 	return filepath.Join(e.snapPath, relPath)
 }
 
+func (e *Engine) readSnapshotData(relPath string) ([]byte, error) {
+	if hash, ok := e.manifest.Files[relPath]; ok && len(hash) >= 4 {
+		if data, err := e.readObject(hash); err == nil {
+			return data, nil
+		}
+	}
+	// Fall back to old path-based layout
+	return os.ReadFile(e.snapFilePath(relPath))
+}
+
 func (e *Engine) deleteFromManifest(path string) {
 	delete(e.manifest.Files, path)
+	delete(e.manifest.Fingerprints, path)
 	e.saveManifest()
 }
 
@@ -365,20 +357,25 @@ func readLinesFromBytes(data []byte) []string {
 
 // ChangedFilesByHash compares current hashes against stored manifest without reading files.
 func (e *Engine) ChangedFilesByHash(currentHashes map[string]string) []FileChange {
+	// Use fingerpints for comparison if available (remote workspace), else files (local).
+	ref := e.manifest.Files
+	if len(e.manifest.Fingerprints) > 0 {
+		ref = e.manifest.Fingerprints
+	}
 	currentSet := make(map[string]bool, len(currentHashes))
 	for f := range currentHashes {
 		currentSet[f] = true
 	}
 	var changes []FileChange
 	for f, newHash := range currentHashes {
-		oldHash, existed := e.manifest.Files[f]
+		oldHash, existed := ref[f]
 		if !existed {
 			changes = append(changes, FileChange{Path: f, Status: StatusAdded})
 		} else if newHash != oldHash {
 			changes = append(changes, FileChange{Path: f, Status: StatusModified})
 		}
 	}
-	for f := range e.manifest.Files {
+	for f := range ref {
 		if !currentSet[f] {
 			changes = append(changes, FileChange{Path: f, Status: StatusDeleted})
 		}
@@ -389,6 +386,29 @@ func (e *Engine) ChangedFilesByHash(currentHashes map[string]string) []FileChang
 // SetFileHash sets a single file hash in the manifest in-memory (does not save).
 func (e *Engine) SetFileHash(path, hash string) {
 	e.manifest.Files[path] = hash
+}
+
+// GetFileHash returns the stored hash for a path.
+func (e *Engine) GetFileHash(path string) (string, bool) {
+	h, ok := e.manifest.Files[path]
+	return h, ok
+}
+
+// GetFileFingerprint returns the stored fingerprint for a path.
+func (e *Engine) GetFileFingerprint(path string) (string, bool) {
+	if e.manifest.Fingerprints == nil {
+		return "", false
+	}
+	fp, ok := e.manifest.Fingerprints[path]
+	return fp, ok
+}
+
+// SetFileFingerprint sets the fingerprint for a file (used by remote workspaces).
+func (e *Engine) SetFileFingerprint(path, fp string) {
+	if e.manifest.Fingerprints == nil {
+		e.manifest.Fingerprints = make(map[string]string)
+	}
+	e.manifest.Fingerprints[path] = fp
 }
 
 // LoadManifestFrom parses manifest JSON from bytes.
@@ -406,12 +426,12 @@ func (e *Engine) MarshalManifest() ([]byte, error) {
 func (e *Engine) RemoveFromManifest(paths []string) error {
 	for _, path := range paths {
 		delete(e.manifest.Files, path)
+		delete(e.manifest.Fingerprints, path)
 	}
 	return e.saveManifest()
 }
 
 // FilterManifest removes entries that don't match the keep predicate.
-// Used to clean stale directory entries from older remote workspace manifests.
 func (e *Engine) FilterManifest(keep func(path string) bool) {
 	cleaned := make(map[string]string, len(e.manifest.Files))
 	for p, h := range e.manifest.Files {
@@ -420,6 +440,15 @@ func (e *Engine) FilterManifest(keep func(path string) bool) {
 		}
 	}
 	e.manifest.Files = cleaned
+	if e.manifest.Fingerprints != nil {
+		cleanedFp := make(map[string]string, len(e.manifest.Fingerprints))
+		for p, fp := range e.manifest.Fingerprints {
+			if keep(p) {
+				cleanedFp[p] = fp
+			}
+		}
+		e.manifest.Fingerprints = cleanedFp
+	}
 	e.saveManifest()
 }
 

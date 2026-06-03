@@ -556,17 +556,30 @@ func (a *App) remoteSnapPath(relPath string) string {
 	return path.Join(a.remotePath, ".warp-snapshots", relPath)
 }
 
-func (a *App) remoteReadSnapshot(relPath string) ([]byte, error) {
-	r, err := a.remoteSFTP.Open(a.remoteSnapPath(relPath))
-	if err != nil {
-		return nil, err
+func (a *App) remoteObjectPath(hash string) string {
+	if len(hash) < 4 {
+		return ""
 	}
-	defer r.Close()
-	return io.ReadAll(r)
+	return path.Join(a.remotePath, ".warp-snapshots", "objects", hash[:2], hash[2:])
 }
 
-func (a *App) remoteWriteSnapshot(relPath string, data []byte) error {
-	rp := a.remoteSnapPath(relPath)
+func (a *App) remoteHasObject(hash string) bool {
+	rp := a.remoteObjectPath(hash)
+	if rp == "" {
+		return false
+	}
+	_, err := a.remoteSFTP.Stat(rp)
+	return err == nil
+}
+
+func (a *App) remoteWriteObject(hash string, data []byte) error {
+	if a.remoteHasObject(hash) {
+		return nil // dedup
+	}
+	rp := a.remoteObjectPath(hash)
+	if rp == "" {
+		return fmt.Errorf("invalid hash")
+	}
 	if err := a.remoteSFTP.MkdirAll(path.Dir(rp)); err != nil {
 		return err
 	}
@@ -577,6 +590,48 @@ func (a *App) remoteWriteSnapshot(relPath string, data []byte) error {
 	defer f.Close()
 	_, err = f.Write(data)
 	return err
+}
+
+func (a *App) remoteReadObject(hash string) ([]byte, error) {
+	rp := a.remoteObjectPath(hash)
+	if rp == "" {
+		return nil, fmt.Errorf("invalid hash")
+	}
+	r, err := a.remoteSFTP.Open(rp)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+// remoteReadSnapshotByPath reads a snapshot file, trying object storage first.
+func (a *App) remoteReadSnapshotByPath(relPath string) ([]byte, error) {
+	if a.snapEng != nil {
+		if hash, ok := a.snapEng.GetFileHash(relPath); ok && len(hash) >= 4 {
+			if data, err := a.remoteReadObject(hash); err == nil {
+				return data, nil
+			}
+		}
+	}
+	// Fall back to old path-based layout
+	r, err := a.remoteSFTP.Open(a.remoteSnapPath(relPath))
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return io.ReadAll(r)
+}
+
+func (a *App) remoteWriteSnapshot(relPath string, data []byte) error {
+	h := snapshot.HashBytes(data)
+	if err := a.remoteWriteObject(h, data); err != nil {
+		return err
+	}
+	if a.snapEng != nil {
+		a.snapEng.SetFileHash(relPath, h)
+	}
+	return nil
 }
 
 func (a *App) remoteRemoveSnapshot(relPath string) error {
@@ -629,23 +684,31 @@ func (a *App) readRemoteFileRaw(fullPath string) ([]byte, error) {
 // remoteInitSnapshots copies text files to remote .warp-snapshots using server-side
 // copy via SSH exec. Falls back to per-file SFTP if SSH exec is unavailable.
 func (a *App) remoteInitSnapshots(entries []remoteFileEntry) error {
-	var textPaths []string
+	type textEntry struct {
+		path string
+		fp   string
+	}
+	var textEntries []textEntry
 	for _, e := range entries {
 		ext := strings.ToLower(path.Ext(e.path))
 		if !snapshot.IsTextFile(ext, nil) {
 			continue
 		}
-		textPaths = append(textPaths, e.path)
-		a.snapEng.SetFileHash(e.path, e.fingerprint())
+		textEntries = append(textEntries, textEntry{path: e.path, fp: e.fingerprint()})
 	}
 
-	if len(textPaths) == 0 {
+	if len(textEntries) == 0 {
 		return a.remoteSaveManifest()
 	}
 
 	runtime.EventsEmit(a.ctx, "snapshot-progress", map[string]interface{}{
-		"phase": "start", "total": len(textPaths), "current": 0,
+		"phase": "start", "total": len(textEntries), "current": 0,
 	})
+
+	textPaths := make([]string, len(textEntries))
+	for i, te := range textEntries {
+		textPaths[i] = te.path
+	}
 
 	chunkSize := 1000
 	for i := 0; i < len(textPaths); i += chunkSize {
@@ -654,7 +717,8 @@ func (a *App) remoteInitSnapshots(entries []remoteFileEntry) error {
 			end = len(textPaths)
 		}
 		chunk := textPaths[i:end]
-		if err := a.remoteExecCopyChunk(chunk); err != nil {
+		mapping, err := a.remoteExecCopyChunk(chunk)
+		if err != nil {
 			for _, p := range chunk {
 				data, err := a.readRemoteFile(p)
 				if err != nil {
@@ -662,6 +726,16 @@ func (a *App) remoteInitSnapshots(entries []remoteFileEntry) error {
 				}
 				if err := a.remoteWriteSnapshot(p, data); err != nil {
 					return err
+				}
+			}
+		} else {
+			for path, sha256 := range mapping {
+				a.snapEng.SetFileHash(path, sha256)
+				for _, te := range textEntries {
+					if te.path == path {
+						a.snapEng.SetFileFingerprint(path, te.fp)
+						break
+					}
 				}
 			}
 		}
@@ -673,25 +747,44 @@ func (a *App) remoteInitSnapshots(entries []remoteFileEntry) error {
 	return a.remoteSaveManifest()
 }
 
-// remoteExecCopyChunk copies files on the remote server via SSH exec with stdin piping.
-func (a *App) remoteExecCopyChunk(paths []string) error {
+// remoteExecCopyChunk copies files server-side using sha256sum + object storage.
+// Returns path→hash mapping parsed from stdout.
+func (a *App) remoteExecCopyChunk(paths []string) (map[string]string, error) {
 	sess, err := a.remoteClient.NewSession()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer sess.Close()
 
 	script := "cd " + shellQuote(a.remotePath) + " || exit 1\n" +
-		"mkdir -p .warp-snapshots || exit 1\n" +
+		"mkdir -p .warp-snapshots/objects || exit 1\n" +
 		"while IFS= read -r f; do\n" +
 		"  [ -z \"$f\" ] && continue\n" +
-		"  d=\".warp-snapshots/$(dirname \"$f\")\"\n" +
-		"  [ \"$d\" != \".warp-snapshots/.\" ] && mkdir -p \"$d\"\n" +
-		"  cp \"$f\" \".warp-snapshots/$f\" || exit 1\n" +
+		"  hash=$(sha256sum \"$f\" | awk '{print $1}')\n" +
+		"  p1=\"${hash:0:2}\"\n" +
+		"  p2=\"${hash:2}\"\n" +
+		"  mkdir -p \".warp-snapshots/objects/$p1\"\n" +
+		"  [ -f \".warp-snapshots/objects/$p1/$p2\" ] || cp \"$f\" \".warp-snapshots/objects/$p1/$p2\"\n" +
+		"  echo \"$hash $f\"\n" +
 		"done\n"
 
 	sess.Stdin = strings.NewReader(strings.Join(paths, "\n") + "\n")
-	return sess.Run(script)
+	output, err := sess.Output(script)
+	if err != nil {
+		return nil, err
+	}
+	mapping := make(map[string]string, len(paths))
+	for _, line := range strings.Split(string(output), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.SplitN(line, " ", 2)
+		if len(parts) == 2 {
+			mapping[parts[1]] = parts[0]
+		}
+	}
+	return mapping, nil
 }
 
 func shellQuote(s string) string {
@@ -760,10 +853,10 @@ func (a *App) remoteChangedFiles() []snapshot.FileChange {
 		case snapshot.StatusAdded:
 			newData, _ = a.readRemoteFile(c.Path)
 		case snapshot.StatusModified:
-			oldData, _ = a.remoteReadSnapshot(c.Path)
+			oldData, _ = a.remoteReadSnapshotByPath(c.Path)
 			newData, _ = a.readRemoteFile(c.Path)
 		case snapshot.StatusDeleted:
-			oldData, _ = a.remoteReadSnapshot(c.Path)
+			oldData, _ = a.remoteReadSnapshotByPath(c.Path)
 		}
 		changes[i].Additions, changes[i].Deletions = snapshot.DiffStats(oldData, newData)
 	}
@@ -867,7 +960,7 @@ func (a *App) AcceptAll() error {
 		changes := a.snapEng.ChangedFilesByHash(fps)
 		for _, c := range changes {
 			if a.remoteIsBinary(c.Path) {
-				a.snapEng.SetFileHash(c.Path, fps[c.Path])
+				a.snapEng.SetFileFingerprint(c.Path, fps[c.Path])
 				continue
 			}
 			data, err := a.readRemoteFile(c.Path)
@@ -877,7 +970,7 @@ func (a *App) AcceptAll() error {
 			if err := a.remoteWriteSnapshot(c.Path, data); err != nil {
 				return err
 			}
-			a.snapEng.SetFileHash(c.Path, fps[c.Path])
+			a.snapEng.SetFileFingerprint(c.Path, fps[c.Path])
 		}
 		if err := a.remoteSaveManifest(); err != nil {
 			return err
@@ -907,7 +1000,7 @@ func (a *App) RevertAll() error {
 	if a.isRemote {
 		changes := a.snapEng.ChangedFilesByHash(entriesToFingerprints(a.scannedRemoteEntries))
 		for _, c := range changes {
-			snapData, err := a.remoteReadSnapshot(c.Path)
+			snapData, err := a.remoteReadSnapshotByPath(c.Path)
 			if err != nil {
 				continue // no snapshot, skip
 			}
@@ -924,7 +1017,7 @@ func (a *App) RevertAll() error {
 		}
 		a.refreshScanLocked()
 		for _, c := range changes {
-			a.snapEng.SetFileHash(c.Path, a.fingerprintFor(c.Path))
+			a.snapEng.SetFileFingerprint(c.Path, a.fingerprintFor(c.Path))
 		}
 		if err := a.remoteSaveManifest(); err != nil {
 			return err
@@ -961,13 +1054,13 @@ func (a *App) AcceptFile(p string) error {
 		ext := strings.ToLower(path.Ext(p))
 		fp := a.fingerprintFor(p)
 		if !snapshot.IsTextFile(ext, snapshot.FirstBytes(data)) {
-			a.snapEng.SetFileHash(p, fp)
+			a.snapEng.SetFileFingerprint(p, fp)
 			return a.remoteSaveManifest()
 		}
 		if err := a.remoteWriteSnapshot(p, data); err != nil {
 			return err
 		}
-		a.snapEng.SetFileHash(p, fp)
+		a.snapEng.SetFileFingerprint(p, fp)
 		if err := a.remoteSaveManifest(); err != nil {
 			return err
 		}
@@ -989,7 +1082,7 @@ func (a *App) RevertFile(p string) error {
 		return fmt.Errorf("未选择工作区")
 	}
 	if a.isRemote {
-		snapData, err := a.remoteReadSnapshot(p)
+		snapData, err := a.remoteReadSnapshotByPath(p)
 		if err != nil {
 			return a.remoteSaveManifest()
 		}
@@ -1005,7 +1098,7 @@ func (a *App) RevertFile(p string) error {
 		}
 		f.Close()
 		a.refreshScanLocked()
-		a.snapEng.SetFileHash(p, a.fingerprintFor(p))
+		a.snapEng.SetFileFingerprint(p, a.fingerprintFor(p))
 		if err := a.remoteSaveManifest(); err != nil {
 			return err
 		}
@@ -1031,7 +1124,7 @@ func (a *App) GetFileDiff(path string) (map[string]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		oldData, err := a.remoteReadSnapshot(path)
+		oldData, err := a.remoteReadSnapshotByPath(path)
 		if err != nil {
 			oldData = nil // new file, no snapshot
 		}
@@ -1086,7 +1179,7 @@ func (a *App) SaveFile(relPath, content string) error {
 		f.Close()
 		a.remoteWriteSnapshot(relPath, []byte(content))
 		a.refreshScanLocked()
-		a.snapEng.SetFileHash(relPath, a.fingerprintFor(relPath))
+		a.snapEng.SetFileFingerprint(relPath, a.fingerprintFor(relPath))
 		if err := a.remoteSaveManifest(); err != nil {
 			return fmt.Errorf("更新清单失败: %w", err)
 		}
