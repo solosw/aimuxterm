@@ -588,7 +588,7 @@ func (a *App) remoteWriteObject(hash string, data []byte) error {
 		return err
 	}
 	defer f.Close()
-	_, err = f.Write(data)
+	_, err = f.Write(snapshot.Compress(data))
 	return err
 }
 
@@ -602,7 +602,11 @@ func (a *App) remoteReadObject(hash string) ([]byte, error) {
 		return nil, err
 	}
 	defer r.Close()
-	return io.ReadAll(r)
+	raw, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot.Decompress(raw), nil
 }
 
 // remoteReadSnapshotByPath reads a snapshot file, trying object storage first.
@@ -764,7 +768,7 @@ func (a *App) remoteExecCopyChunk(paths []string) (map[string]string, error) {
 		"  p1=\"${hash:0:2}\"\n" +
 		"  p2=\"${hash:2}\"\n" +
 		"  mkdir -p \".warp-snapshots/objects/$p1\"\n" +
-		"  [ -f \".warp-snapshots/objects/$p1/$p2\" ] || cp \"$f\" \".warp-snapshots/objects/$p1/$p2\"\n" +
+		"  [ -f \".warp-snapshots/objects/$p1/$p2\" ] || gzip -c \"$f\" > \".warp-snapshots/objects/$p1/$p2\"\n" +
 		"  echo \"$hash $f\"\n" +
 		"done\n"
 

@@ -1,10 +1,13 @@
 package snapshot
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,7 +219,11 @@ func (e *Engine) objectPath(hash string) string {
 	return filepath.Join(e.objectsDir(), hash[:2], hash[2:])
 }
 func (e *Engine) readObject(hash string) ([]byte, error) {
-	return os.ReadFile(e.objectPath(hash))
+	raw, err := os.ReadFile(e.objectPath(hash))
+	if err != nil {
+		return nil, err
+	}
+	return Decompress(raw), nil
 }
 func (e *Engine) writeObject(hash string, data []byte) error {
 	objPath := e.objectPath(hash)
@@ -229,7 +236,7 @@ func (e *Engine) writeObject(hash string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(objPath), 0755); err != nil {
 		return err
 	}
-	return os.WriteFile(objPath, data, 0644)
+	return os.WriteFile(objPath, Compress(data), 0644)
 }
 
 // snapFilePath returns the old-style path-based snapshot location (for backward compat).
@@ -459,4 +466,27 @@ func ReadFileContent(workspace, relPath string) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// Compress gzip-compresses data.
+func Compress(data []byte) []byte {
+	var buf bytes.Buffer
+	w, _ := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	w.Write(data)
+	w.Close()
+	return buf.Bytes()
+}
+
+// Decompress tries gzip decompression; returns raw data if not compressed.
+func Decompress(data []byte) []byte {
+	r, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return data
+	}
+	defer r.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		return data
+	}
+	return out
 }

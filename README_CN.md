@@ -19,16 +19,23 @@
 - 每个 Tab 独立工作目录，切换 Tab 保持会话运行
 
 ### 文件变更追踪
-- 基于 fsnotify 的实时文件监听
+- 基于 fsnotify 的实时文件监听（本地）
+- 15 秒间隔自动轮询（远程）
 - 快照式变更检测，不依赖 Git
+- **Git 风格对象存储** — 内容寻址 `.warp-snapshots/objects/`，SHA-256 自动去重
+- **Gzip 压缩** — 所有对象压缩存储，节省约 60-70% 空间
 - Diff 视图，展示逐行增删统计
 - **全部接受** / **全部回退**，批量操作
 - **接受单个** / **回退单个**，精细控制
 
 ### 远程工作区（SSH + SFTP）
 - 连接远程服务器，浏览文件系统
+- 服务端快照创建（SSH exec + sha256sum，零网络传输）
 - 基于指纹对比（文件大小 + 修改时间）的变更检测
+- 15 秒自动轮询远程变更
+- 自动创建远程 `.gitignore`（含 `.warp-snapshots` 条目）
 - 按需读取远程文件 Diff
+- 服务端对象去重 + gzip 压缩
 
 ### 其他
 - 启动命令 — 终端启动时自动执行预设的 CLI 命令
@@ -44,7 +51,7 @@ Wails 桌面应用
 │   ├── app.go            — 绑定的方法（工作区、终端、快照、SSH）
 │   ├── scanner/          — 递归文件扫描 + .gitignore + 二进制检测
 │   ├── watcher/          — fsnotify 封装，带防抖
-│   ├── snapshot/         — SHA-256 快照引擎 (.warp-snapshots/)
+│   ├── snapshot/         — 内容寻址快照引擎（SHA-256 + gzip，Git 风格对象存储）
 │   ├── terminal/         — PTY & SSH 会话管理
 │   └── config/           — JSON 持久化存储（工作区、SSH、命令）
 ├── Vue 3 前端
@@ -91,7 +98,7 @@ wails build
 | 终端 | xterm.js + conpty (Windows) |
 | 状态管理 | Pinia |
 | 文件监听 | fsnotify |
-| 快照存储 | SHA-256 + 文件系统 |
+| 快照存储 | SHA-256 + gzip + 内容寻址对象 (.warp-snapshots/objects/) |
 
 ## 开源协议
 

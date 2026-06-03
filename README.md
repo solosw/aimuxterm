@@ -19,16 +19,23 @@ Manage workspaces, run multi-tab terminals (local PTY & SSH), and track file cha
 - Per-tab CWD tracking, sessions persist across tab switches
 
 ### File Change Tracking
-- Real-time filesystem monitoring via fsnotify
+- Real-time filesystem monitoring via fsnotify (local)
+- Periodic auto-polling (remote, 15s interval)
 - Snapshot-based change detection (no Git dependency)
+- **Git-style object storage** — content-addressed `.warp-snapshots/objects/` with SHA-256 dedup
+- **Gzip compression** — all objects compressed, ~60-70% space savings
 - Diff view with line-level additions/deletions
 - **Accept All** / **Revert All** for bulk operations
 - **Accept File** / **Revert File** for single-file operations
 
 ### Remote Workspace (SSH + SFTP)
 - Connect to remote servers and browse the filesystem
+- Server-side snapshot creation via SSH exec (sha256sum, zero network transfer)
 - File change tracking via fingerprint comparison (size + mod time)
+- 15-second auto-polling for remote changes
+- Auto-create `.gitignore` with `.warp-snapshots` entry on remote
 - Read remote file diffs on demand
+- Snapshots deduplicated and gzip-compressed server-side
 
 ### Quality of Life
 - Startup commands — auto-run CLI tools on terminal launch
@@ -44,7 +51,7 @@ Wails Desktop App
 │   ├── app.go            — bound methods (workspace, terminal, snapshot, SSH)
 │   ├── scanner/          — recursive file scan + .gitignore + binary detection
 │   ├── watcher/          — fsnotify wrapper with debounce
-│   ├── snapshot/         — SHA-256 snapshot engine (.warp-snapshots/)
+│   ├── snapshot/         — content-addressed snapshot engine (SHA-256 + gzip, Git-style objects)
 │   ├── terminal/         — PTY & SSH session management
 │   └── config/           — persistent JSON store for workspaces, SSH, commands
 ├── Vue 3 Frontend
@@ -91,7 +98,7 @@ The dev server starts at `http://localhost:34115` with hot reload.
 | Terminal | xterm.js + conpty (Windows) |
 | State | Pinia |
 | File Watch | fsnotify |
-| Snapshot | SHA-256 + filesystem |
+| Snapshot | SHA-256 + gzip + content-addressed objects (.warp-snapshots/objects/) |
 
 ## License
 
