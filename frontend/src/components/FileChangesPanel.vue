@@ -52,6 +52,12 @@ async function showDiff(file: snapshot.FileChange) {
   diffContent.value = await store.getDiff(file.path)
 }
 
+function onDragStart(event: DragEvent, relPath: string) {
+  const absPath = ws.getAbsolutePath(relPath)
+  event.dataTransfer?.setData('text/plain', absPath)
+  event.dataTransfer!.effectAllowed = 'copy'
+}
+
 function closeDiff() {
   viewingDiff.value = null
   diffContent.value = null
@@ -75,7 +81,9 @@ function closeDiff() {
         :key="f.path"
         class="file-item"
         :class="statusClass[f.status]"
+        draggable="true"
         @click="showDiff(f)"
+        @dragstart="onDragStart($event, f.path)"
       >
         <span class="file-icon">{{ getFileIcon(f.path) }}</span>
         <span class="status-badge">{{ statusLabel[f.status] }}</span>

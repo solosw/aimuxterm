@@ -126,7 +126,14 @@ function isExpanded(node: TreeNode): boolean {
   return expanded.value.has(node.path)
 }
 
-function getIcon(node: TreeNode): string {
+function onDragStart(event: DragEvent, node: TreeNode) {
+	  if (node.isDir) return
+	  const absPath = ws.getAbsolutePath(node.path)
+	  event.dataTransfer?.setData('text/plain', absPath)
+	  event.dataTransfer!.effectAllowed = 'copy'
+	}
+
+	function getIcon(node: TreeNode): string {
   if (node.name === '..') return '\u{1F519}'
   if (node.isDir) {
     if (node.loading) return '\u{23F3}'
@@ -158,7 +165,9 @@ function renderTree(nodes: TreeNode[], depth: number = 0): FlatNode[] {
         :key="item.node.path"
         class="tree-node"
         :style="{ paddingLeft: item.padding + 'px' }"
+        :draggable="!item.node.isDir"
         @click="handleClick(item.node)"
+        @dragstart="onDragStart($event, item.node)"
       >
         <span class="node-icon">{{ getIcon(item.node) }}</span>
         <span class="node-name">{{ item.node.name }}</span>

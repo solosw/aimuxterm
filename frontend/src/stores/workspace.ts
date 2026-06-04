@@ -73,11 +73,22 @@ export const useWorkspaceStore = defineStore('workspace', () => {
   async function refreshRemote() { const r = await RefreshRemoteWorkspace(); if (r) { info.value = r; syncChanges() } }
   async function loadRemoteDir(dir: string) { return await ListRemoteDir(dir) }
 
+  function getAbsolutePath(relPath: string): string {
+    if (!info.value) return relPath
+    let base = info.value.path
+    if (info.value.isRemote) {
+      const idx = base.indexOf(':')
+      if (idx >= 0) base = base.substring(idx + 1)
+    }
+    base = base.replace(/\\/g, '/')
+    return base + '/' + relPath
+  }
+
   return {
     info, history, remoteList, hasWorkspace,
     previewFiles, activePreviewFile, openPreviewFile, closePreviewFile,
     loadHistory, selectWorkspace, openWorkspace, openRemoteWorkspace, removeRemote,
     openInNewWindow, removeFromHistory, refresh, refreshLocal, refreshRemote, loadRemoteDir,
-    snapshotProgress, showStartupPicker
+    snapshotProgress, showStartupPicker, getAbsolutePath
   }
 })

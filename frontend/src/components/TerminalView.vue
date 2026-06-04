@@ -9,6 +9,7 @@ const props = defineProps<{ tabId: string }>()
 
 const store = useTerminalStore()
 const termEl = ref<HTMLDivElement>()
+const isDragOver = ref(false)
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let unsubscribe: (() => void) | null = null
@@ -61,6 +62,19 @@ onMounted(async () => {
   observer.observe(el)
 })
 
+function onDragOver(event: DragEvent) {
+  event.preventDefault()
+  event.dataTransfer!.dropEffect = 'copy'
+  isDragOver.value = true
+}
+function onDragLeave() { isDragOver.value = false }
+function onDrop(event: DragEvent) {
+  event.preventDefault()
+  isDragOver.value = false
+  const path = event.dataTransfer?.getData('text/plain')
+  if (path) store.writeToTerminal(props.tabId, path)
+}
+
 onUnmounted(() => {
   unsubscribe?.()
   term?.dispose()
@@ -68,12 +82,22 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div ref="termEl" class="terminal-container"></div>
+  <div
+  ref="termEl"
+  class="terminal-container"
+  :class="{ 'drag-over': isDragOver }"
+  @dragover="onDragOver"
+  @dragleave="onDragLeave"
+  @drop="onDrop"
+></div>
 </template>
 
 <style scoped>
 .terminal-container {
   width: 100%;
   height: 100%;
+}
+.terminal-container.drag-over {
+  box-shadow: inset 0 0 0 2px #58a6ff;
 }
 </style>
