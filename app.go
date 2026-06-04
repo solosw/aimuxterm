@@ -465,6 +465,13 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 			client.Close()
 			return nil, fmt.Errorf("创建远程快照失败: %w", err)
 		}
+	} else {
+		for _, e := range entries {
+			if _, ok := a.snapEng.GetFileFingerprint(e.path); !ok {
+				a.snapEng.SetFileFingerprint(e.path, e.fingerprint())
+			}
+		}
+		a.remoteSaveManifest()
 	}
 
 	// Save entry

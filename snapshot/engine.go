@@ -364,10 +364,15 @@ func readLinesFromBytes(data []byte) []string {
 
 // ChangedFilesByHash compares current hashes against stored manifest without reading files.
 func (e *Engine) ChangedFilesByHash(currentHashes map[string]string) []FileChange {
-	// Use fingerpints for comparison if available (remote workspace), else files (local).
 	ref := e.manifest.Files
+	checkMod := true
 	if len(e.manifest.Fingerprints) > 0 {
 		ref = e.manifest.Fingerprints
+	} else if len(e.manifest.Files) > 0 {
+		// Old manifest without fingerprints: Files has SHA-256 but
+		// currentHashes has size|modTime. Skip modification check to
+		// avoid false positives (every file flagged as modified).
+		checkMod = false
 	}
 	currentSet := make(map[string]bool, len(currentHashes))
 	for f := range currentHashes {
@@ -378,7 +383,7 @@ func (e *Engine) ChangedFilesByHash(currentHashes map[string]string) []FileChang
 		oldHash, existed := ref[f]
 		if !existed {
 			changes = append(changes, FileChange{Path: f, Status: StatusAdded})
-		} else if newHash != oldHash {
+		} else if checkMod && newHash != oldHash {
 			changes = append(changes, FileChange{Path: f, Status: StatusModified})
 		}
 	}
