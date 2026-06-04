@@ -8,6 +8,7 @@ import SSHConnectDialog from './SSHConnectDialog.vue'
 const store = useTerminalStore()
 const ws = useWorkspaceStore()
 const showSSHDialog = ref(false)
+const showCmdInput = ref(false)
 
 const gridCols = computed(() => {
   const n = store.tabs.length
@@ -41,6 +42,14 @@ const gridCols = computed(() => {
       >
         {{ store.layoutMode === 'tabs' ? '⊞' : '⊟' }}
       </button>
+      <button
+        class="btn-cmd-input"
+        :class="{ active: showCmdInput }"
+        :title="showCmdInput ? '隐藏命令输入栏' : '显示命令输入栏'"
+        @click="showCmdInput = !showCmdInput"
+      >
+        &#x2328;
+      </button>
     </div>
 
     <div v-if="store.tabs.length === 0" class="no-tabs">
@@ -56,7 +65,7 @@ const gridCols = computed(() => {
           <button class="grid-cell-close" @click="store.closeTab(tab.id)">×</button>
         </div>
         <div class="grid-cell-body">
-          <TerminalView :tab-id="tab.id" />
+          <TerminalView :tab-id="tab.id" :show-cmd-input="showCmdInput" />
         </div>
       </div>
     </div>
@@ -65,7 +74,7 @@ const gridCols = computed(() => {
     <div v-else class="tab-body">
       <template v-for="tab in store.tabs" :key="tab.id">
         <div v-show="tab.id === store.activeTabId" class="tab-content">
-          <TerminalView :tab-id="tab.id" />
+          <TerminalView :tab-id="tab.id" :show-cmd-input="showCmdInput" />
         </div>
       </template>
     </div>
@@ -146,6 +155,18 @@ const gridCols = computed(() => {
   line-height: 22px;
 }
 .btn-layout:hover { color: #fff; border-color: #666; }
+.btn-cmd-input {
+  background: none;
+  border: 1px solid #444;
+  color: #888;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 8px;
+  border-radius: 3px;
+  line-height: 22px;
+}
+.btn-cmd-input:hover { color: #fff; border-color: #666; }
+.btn-cmd-input.active { color: #58a6ff; border-color: #58a6ff; }
 .tab-body {
   flex: 1;
   display: flex;

@@ -535,7 +535,7 @@ func (a *App) listRemoteFiles(c *sftp.Client, root string) ([]remoteFileEntry, e
 		}
 		rel := strings.TrimPrefix(path.Clean(w.Path()), path.Clean(root))
 		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" || isRemoteNoise(rel, false) {
+		if rel == "" || isRemoteNoise(rel, false) || s.Size() > 5*1024*1024 {
 			continue
 		}
 		entries = append(entries, remoteFileEntry{

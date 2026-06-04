@@ -46,6 +46,9 @@ func Scan(workspace string) (*ScanResult, error) {
 		if isBinaryPath(path) {
 			return nil
 		}
+		if info.Size() > 5*1024*1024 {
+			return nil
+		}
 		files = append(files, relPath)
 		return nil
 	})
