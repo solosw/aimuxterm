@@ -60,7 +60,7 @@ var remoteSkipDirs = map[string]bool{
 	".nuxt": true, ".output": true, "coverage": true, ".nyc_output": true,
 }
 
-func isRemoteNoise(relPath string, isDir bool) bool {
+func (a *App) isRemoteNoise(relPath string, isDir bool) bool {
 	name := path.Base(relPath)
 	if isDir {
 		if remoteSkipDirs[name] || (strings.HasPrefix(name, ".") && name != ".gitignore") {
@@ -71,6 +71,10 @@ func isRemoteNoise(relPath string, isDir bool) bool {
 		if remoteSkipDirs[seg] || (strings.HasPrefix(seg, ".") && seg != ".." && seg != "." && seg != ".gitignore") {
 			return true
 		}
+	}
+	// Check .gitignore patterns
+	if a.remoteGitignore != nil && a.remoteGitignore.Match(relPath) {
+		return true
 	}
 	// Extension-only filter for fast scanning (no download)
 	ext := strings.ToLower(path.Ext(relPath))
@@ -113,8 +117,9 @@ type App struct {
 	remoteClient     *ssh.Client
 	remoteSFTP       *sftp.Client
 	remotePath       string
-	remoteSSHCfg     terminal.SSHConfig // saved for auto-creating SSH terminals
+	remoteSSHCfg     terminal.SSHConfig  // saved for auto-creating SSH terminals
 	remotePollCancel context.CancelFunc
+	remoteGitignore  *scanner.Gitignore
 
 	snapEng  *snapshot.Engine
 	termMgr  *terminal.Manager
@@ -346,7 +351,7 @@ func (a *App) ListRemoteDir(dir string) ([]RemoteDirEntry, error) {
 	}
 	for _, info := range infos {
 		entryPath := path.Join(dir, info.Name())
-		if isRemoteNoise(entryPath, info.IsDir()) {
+		if a.isRemoteNoise(entryPath, info.IsDir()) {
 			continue
 		}
 		entries = append(entries, RemoteDirEntry{
@@ -453,6 +458,12 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 
 	a.remoteEnsureGitignore()
 
+	// Load remote .gitignore for filtering
+	if giData, err := a.readRemoteFileRaw(path.Join(a.remotePath, ".gitignore")); err == nil {
+		a.remoteGitignore = scanner.ParseGitignore(string(giData))
+	} else {
+		a.remoteGitignore = &scanner.Gitignore{}
+	}
 	// Load manifest from remote; if absent init fresh
 	if err := a.remoteLoadManifest(); err != nil {
 		sftpClient.Close()
@@ -466,6 +477,12 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 			return nil, fmt.Errorf("创建远程快照失败: %w", err)
 		}
 	} else {
+		// Clean stale manifest entries (now filtered by gitignore/binary/size)
+		currentSet := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			currentSet[e.path] = true
+		}
+		a.snapEng.FilterManifest(func(p string) bool { return currentSet[p] })
 		for _, e := range entries {
 			if _, ok := a.snapEng.GetFileFingerprint(e.path); !ok {
 				a.snapEng.SetFileFingerprint(e.path, e.fingerprint())
@@ -535,7 +552,7 @@ func (a *App) listRemoteFiles(c *sftp.Client, root string) ([]remoteFileEntry, e
 		}
 		rel := strings.TrimPrefix(path.Clean(w.Path()), path.Clean(root))
 		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" || isRemoteNoise(rel, false) || s.Size() > 5*1024*1024 {
+		if rel == "" || a.isRemoteNoise(rel, false) || s.Size() > 5*1024*1024 {
 			continue
 		}
 		entries = append(entries, remoteFileEntry{
