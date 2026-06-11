@@ -13,7 +13,7 @@ Manage workspaces, run multi-tab terminals (local PTY & SSH), and track file cha
 - Recently-opened workspace history
 
 ### Terminal
-- Multi-tab terminal with local PTY and SSH support
+- Multi-tab terminal with local PTY (ConPTY on Windows, Unix PTY on Linux/macOS) and SSH support
 - xterm.js-based terminal emulator
 - One-click SSH terminals from saved configurations
 - Per-tab CWD tracking, sessions persist across tab switches
@@ -52,7 +52,7 @@ Wails Desktop App
 │   ├── scanner/          — recursive file scan + .gitignore + binary detection
 │   ├── watcher/          — fsnotify wrapper with debounce
 │   ├── snapshot/         — content-addressed snapshot engine (SHA-256 + gzip, Git-style objects)
-│   ├── terminal/         — PTY & SSH session management
+│   ├── terminal/         — PTY (Windows ConPTY / Unix PTY) & SSH session management
 │   └── config/           — persistent JSON store for workspaces, SSH, commands
 ├── Vue 3 Frontend
 │   ├── WorkspaceBar      — workspace path + selector + history
@@ -95,7 +95,7 @@ The dev server starts at `http://localhost:34115` with hot reload.
 | Framework | Wails v2 |
 | Backend | Go |
 | Frontend | Vue 3 + TypeScript + Vite |
-| Terminal | xterm.js + conpty (Windows) |
+| Terminal | xterm.js + ConPTY (Windows) / Unix PTY (Linux/macOS) |
 | State | Pinia |
 | File Watch | fsnotify |
 | Snapshot | SHA-256 + gzip + content-addressed objects (.warp-snapshots/objects/) |

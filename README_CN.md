@@ -13,7 +13,7 @@
 - 最近打开的工作区历史记录
 
 ### 终端
-- 多 Tab 终端，支持本地 PTY 和 SSH
+- 多 Tab 终端，支持本地 PTY（Windows ConPTY / Linux & macOS Unix PTY）和 SSH
 - 基于 xterm.js 的终端模拟器
 - 从已保存的配置一键创建 SSH 终端
 - 每个 Tab 独立工作目录，切换 Tab 保持会话运行
@@ -52,7 +52,7 @@ Wails 桌面应用
 │   ├── scanner/          — 递归文件扫描 + .gitignore + 二进制检测
 │   ├── watcher/          — fsnotify 封装，带防抖
 │   ├── snapshot/         — 内容寻址快照引擎（SHA-256 + gzip，Git 风格对象存储）
-│   ├── terminal/         — PTY & SSH 会话管理
+│   ├── terminal/         — PTY（Windows ConPTY / Unix PTY）& SSH 会话管理
 │   └── config/           — JSON 持久化存储（工作区、SSH、命令）
 ├── Vue 3 前端
 │   ├── WorkspaceBar      — 工作区路径 + 选择按钮 + 历史
@@ -95,7 +95,7 @@ wails build
 | 框架 | Wails v2 |
 | 后端 | Go |
 | 前端 | Vue 3 + TypeScript + Vite |
-| 终端 | xterm.js + conpty (Windows) |
+| 终端 | xterm.js + ConPTY (Windows) / Unix PTY (Linux/macOS) |
 | 状态管理 | Pinia |
 | 文件监听 | fsnotify |
 | 快照存储 | SHA-256 + gzip + 内容寻址对象 (.warp-snapshots/objects/) |
