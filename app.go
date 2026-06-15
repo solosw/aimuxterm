@@ -232,6 +232,7 @@ func (a *App) closeRemote() {
 	}
 	a.isRemote = false
 	a.remotePath = ""
+	a.remoteGitignore = nil
 	a.scannedRemoteEntries = nil
 }
 
@@ -430,6 +431,14 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 		return nil, fmt.Errorf("SFTP初始化失败: %w", err)
 	}
 
+	a.remotePath = remotePath
+	a.remoteSFTP = sftpClient
+	if giData, err := a.readRemoteFileRaw(path.Join(remotePath, ".gitignore")); err == nil {
+		a.remoteGitignore = scanner.ParseGitignore(string(giData))
+	} else {
+		a.remoteGitignore = &scanner.Gitignore{}
+	}
+
 	// Full Walk for change detection (noise-filtered, fast with skip dirs)
 	entries, err := a.listRemoteFiles(sftpClient, remotePath)
 	if err != nil {
@@ -458,12 +467,6 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 
 	a.remoteEnsureGitignore()
 
-	// Load remote .gitignore for filtering
-	if giData, err := a.readRemoteFileRaw(path.Join(a.remotePath, ".gitignore")); err == nil {
-		a.remoteGitignore = scanner.ParseGitignore(string(giData))
-	} else {
-		a.remoteGitignore = &scanner.Gitignore{}
-	}
 	// Load manifest from remote; if absent init fresh
 	if err := a.remoteLoadManifest(); err != nil {
 		sftpClient.Close()

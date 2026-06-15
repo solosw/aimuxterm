@@ -104,12 +104,13 @@ func (gi *Gitignore) Match(path string) bool {
 	if len(gi.patterns) == 0 {
 		return false
 	}
+	path = filepath.ToSlash(path)
 	ignored := false
 	for _, p := range gi.patterns {
-		if p.dirOnly {
-			continue // simple impl: skip directory-only patterns for now
-		}
 		matched := matchGlob(p.glob, path)
+		if p.dirOnly {
+			matched = matchDirGlob(p.glob, path)
+		}
 		if matched {
 			ignored = !p.negate
 		}
@@ -117,7 +118,31 @@ func (gi *Gitignore) Match(path string) bool {
 	return ignored
 }
 
+func matchDirGlob(pattern, path string) bool {
+	pattern = strings.Trim(pattern, "/")
+	path = strings.Trim(path, "/")
+	if pattern == "" {
+		return false
+	}
+	if strings.Contains(pattern, "/") {
+		return path == pattern || strings.HasPrefix(path, pattern+"/")
+	}
+	for _, seg := range strings.Split(path, "/") {
+		if seg == pattern {
+			return true
+		}
+	}
+	return false
+}
+
 func matchGlob(pattern, path string) bool {
+	pattern = filepath.ToSlash(pattern)
+	path = filepath.ToSlash(path)
+	// Exact directory/file prefix patterns like data or bin/results
+	if !strings.ContainsAny(pattern, "*?[") {
+		pattern = strings.Trim(pattern, "/")
+		return path == pattern || strings.HasPrefix(path, pattern+"/")
+	}
 	// Handle ** patterns
 	if strings.Contains(pattern, "**") {
 		parts := strings.Split(pattern, "**")
