@@ -1,19 +1,82 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import { CreateTerminal, WriteToTerminal, ResizeTerminal, CloseTerminal } from '../../wailsjs/go/main/App'
+import { CreateTerminal, WriteToTerminal, ResizeTerminal, CloseTerminal, GetTerminalSnapshots, SaveTerminalSnapshots, ReconnectTerminal } from '../../wailsjs/go/main/App'
 import { EventsOn, EventsOff } from '../../wailsjs/runtime/runtime'
+import { config } from '../../wailsjs/go/models'
+import { useWorkspaceStore } from './workspace'
+
+export type TerminalType = 'local' | 'ssh'
 
 export interface TabItem {
   id: string
   title: string
+  type: TerminalType
+  cwd: string
+  sshName?: string
+  restored?: boolean
+  output?: string
+  error?: string
 }
 
+const MAX_OUTPUT = 200 * 1024
+
 export const useTerminalStore = defineStore('terminal', () => {
+  const ws = useWorkspaceStore()
   const tabs = ref<TabItem[]>([])
   const activeTabId = ref<string | null>(null)
   const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value) || null)
   const error = ref<string | null>(null)
+  const layoutMode = ref<'tabs' | 'grid'>('tabs')
   let counter = 0
+  let saveTimer: number | null = null
+
+  function trimOutput(text: string) {
+    return text.length > MAX_OUTPUT ? text.slice(text.length - MAX_OUTPUT) : text
+  }
+
+  function scheduleSave() {
+    if (saveTimer !== null) return
+    saveTimer = window.setTimeout(() => {
+      saveTimer = null
+      persistSnapshots()
+    }, 1000)
+  }
+
+  async function persistSnapshots() {
+    const snapshots = tabs.value.map(t => new config.TerminalSnapshot({
+      id: t.id,
+      title: t.title,
+      type: t.type,
+      workspace: ws.info?.path || '',
+      cwd: t.cwd,
+      sshName: t.sshName || '',
+      output: t.output || '',
+      restored: !!t.restored,
+      active: t.id === activeTabId.value,
+      updatedAt: new Date().toISOString()
+    }))
+    try { await SaveTerminalSnapshots(snapshots as any) } catch {}
+  }
+
+  async function loadSnapshots() {
+    try {
+      const snapshots = await GetTerminalSnapshots()
+      tabs.value = (snapshots || []).map((s: any) => ({
+        id: s.id,
+        title: s.title || '恢复的终端',
+        type: (s.type || 'local') as TerminalType,
+        cwd: s.cwd || '',
+        sshName: s.sshName || '',
+        output: s.output || '',
+        restored: true
+      }))
+      const active = (snapshots || []).find((s: any) => s.active)
+      activeTabId.value = active?.id || tabs.value[0]?.id || null
+      counter = tabs.value.length
+    } catch (e: any) {
+      error.value = '恢复终端失败: ' + (e?.message || e)
+    }
+  }
 
   async function createTerminal(): Promise<TabItem | null> {
     error.value = null
@@ -24,9 +87,10 @@ export const useTerminalStore = defineStore('terminal', () => {
         return null
       }
       counter++
-      const tab: TabItem = { id, title: `终端 ${counter}` }
+      const tab: TabItem = { id, title: `终端 ${counter}`, type: 'local', cwd: ws.info?.isRemote ? '' : (ws.info?.path || ''), output: '' }
       tabs.value.push(tab)
       activeTabId.value = id
+      scheduleSave()
       return tab
     } catch (e: any) {
       error.value = '创建终端失败: ' + (e?.message || e)
@@ -34,21 +98,66 @@ export const useTerminalStore = defineStore('terminal', () => {
     }
   }
 
+  async function reconnectTab(id: string) {
+    const tab = tabs.value.find(t => t.id === id)
+    if (!tab) return
+    tab.error = ''
+    try {
+      const snap = new config.TerminalSnapshot({
+        id: tab.id,
+        title: tab.title,
+        type: tab.type,
+        workspace: ws.info?.path || '',
+        cwd: tab.cwd,
+        sshName: tab.sshName || '',
+        output: tab.output || '',
+        restored: true,
+        active: tab.id === activeTabId.value,
+        updatedAt: new Date().toISOString()
+      })
+      const newId = await ReconnectTerminal(snap as any)
+      EventsOff('terminal-output:' + tab.id)
+      tab.id = newId
+      tab.restored = false
+      tab.output = ''
+      tab.error = ''
+      activeTabId.value = newId
+      scheduleSave()
+    } catch (e: any) {
+      tab.error = '重新连接失败: ' + (e?.message || e)
+    }
+  }
+
   async function closeTab(id: string) {
-    try { await CloseTerminal(id) } catch {}
-    EventsOff('terminal-output:' + id)
+    const tab = tabs.value.find(t => t.id === id)
+    if (tab && !tab.restored) {
+      try { await CloseTerminal(id) } catch {}
+      EventsOff('terminal-output:' + id)
+    }
     const idx = tabs.value.findIndex(t => t.id === id)
     if (idx !== -1) tabs.value.splice(idx, 1)
     if (activeTabId.value === id) {
       activeTabId.value = tabs.value.length > 0 ? tabs.value[tabs.value.length - 1].id : null
     }
+    persistSnapshots()
   }
 
-  function setActive(id: string) { activeTabId.value = id }
+  function setActive(id: string) {
+    activeTabId.value = id
+    scheduleSave()
+  }
 
   function addSSHTab(id: string, title: string) {
-    tabs.value.push({ id, title })
+    tabs.value.push({ id, title, type: 'ssh', cwd: ws.info?.isRemote ? (ws.info?.path || '') : '', sshName: title, output: '' })
     activeTabId.value = id
+    scheduleSave()
+  }
+
+  function appendOutput(tabId: string, data: string) {
+    const tab = tabs.value.find(t => t.id === tabId)
+    if (!tab) return
+    tab.output = trimOutput((tab.output || '') + data)
+    scheduleSave()
   }
 
   function writeToTerminal(tabId: string, data: string) { WriteToTerminal(tabId, data) }
@@ -56,16 +165,22 @@ export const useTerminalStore = defineStore('terminal', () => {
 
   function subscribeTerminal(id: string, handler: (data: string) => void): () => void {
     const eventName = 'terminal-output:' + id
-    EventsOn(eventName, handler)
+    EventsOn(eventName, (data: string) => {
+      appendOutput(id, data)
+      handler(data)
+    })
     return () => EventsOff(eventName)
   }
 
-  const layoutMode = ref<'tabs' | 'grid'>('tabs')
-  function toggleLayout() { layoutMode.value = layoutMode.value === 'tabs' ? 'grid' : 'tabs' }
+  function toggleLayout() {
+    layoutMode.value = layoutMode.value === 'tabs' ? 'grid' : 'tabs'
+    scheduleSave()
+  }
 
   return {
     tabs, activeTabId, activeTab, error,
     layoutMode, toggleLayout,
+    loadSnapshots, reconnectTab,
     createTerminal, addSSHTab, closeTab, setActive,
     writeToTerminal, resizeTerminal, subscribeTerminal
   }

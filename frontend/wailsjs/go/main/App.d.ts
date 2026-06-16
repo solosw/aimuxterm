@@ -28,6 +28,8 @@ export function GetStartupCommands():Promise<Array<config.StartupCommand>>;
 
 export function GetStartupWorkspace():Promise<string>;
 
+export function GetTerminalSnapshots():Promise<Array<config.TerminalSnapshot>>;
+
 export function GetWorkspaceHistory():Promise<Array<config.WorkspaceEntry>>;
 
 export function GetWorkspaceInfo():Promise<main.WorkspaceInfo>;
@@ -39,6 +41,8 @@ export function OpenInNewWindow(arg1:string):Promise<void>;
 export function OpenRemoteWorkspace(arg1:main.SSHConfig,arg2:string):Promise<main.WorkspaceInfo>;
 
 export function OpenWorkspace(arg1:string):Promise<main.WorkspaceInfo>;
+
+export function ReconnectTerminal(arg1:config.TerminalSnapshot):Promise<string>;
 
 export function RefreshLocalWorkspace():Promise<main.WorkspaceInfo>;
 
@@ -63,6 +67,8 @@ export function SaveRemoteWorkspace(arg1:config.RemoteWorkspaceEntry):Promise<vo
 export function SaveSSHConfig(arg1:config.SSHConfig):Promise<void>;
 
 export function SaveStartupCommands(arg1:Array<config.StartupCommand>):Promise<void>;
+
+export function SaveTerminalSnapshots(arg1:Array<config.TerminalSnapshot>):Promise<void>;
 
 export function SelectWorkspace():Promise<main.WorkspaceInfo>;
 

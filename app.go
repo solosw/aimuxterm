@@ -1254,6 +1254,67 @@ func (a *App) CreateTerminal() (string, error) {
 	return id, nil
 }
 
+
+func (a *App) GetTerminalSnapshots() ([]config.TerminalSnapshot, error) {
+	if a.cfgStore == nil {
+		return nil, nil
+	}
+	items, err := a.cfgStore.LoadTerminalSnapshots()
+	if err != nil {
+		return nil, err
+	}
+	workspace := a.workspace
+	filtered := make([]config.TerminalSnapshot, 0, len(items))
+	for _, item := range items {
+		if item.Workspace == "" || item.Workspace == workspace {
+			item.Restored = true
+			filtered = append(filtered, item)
+		}
+	}
+	return filtered, nil
+}
+
+func (a *App) SaveTerminalSnapshots(items []config.TerminalSnapshot) error {
+	if a.cfgStore == nil {
+		return nil
+	}
+	return a.cfgStore.SaveTerminalSnapshots(items)
+}
+
+func (a *App) ReconnectTerminal(snap config.TerminalSnapshot) (string, error) {
+	if snap.Type == "ssh" {
+		if a.cfgStore == nil {
+			return "", fmt.Errorf("配置存储不可用")
+		}
+		cfgs, err := a.cfgStore.LoadSSHConfigs()
+		if err != nil {
+			return "", err
+		}
+		for _, c := range cfgs {
+			if c.Name == snap.SSHName || c.Name == snap.Title {
+				id, err := a.termMgr.CreateSSH(terminal.SSHConfig{
+					Name: c.Name, Host: c.Host, Port: c.Port,
+					User: c.User, Password: c.Password, KeyPath: c.KeyPath,
+				})
+				if err != nil {
+					return "", err
+				}
+				sess, _ := a.termMgr.Get(id)
+				go a.readTerminalOutput(id, sess)
+				return id, nil
+			}
+		}
+		return "", fmt.Errorf("SSH 配置不存在: %s", snap.SSHName)
+	}
+	id, err := a.termMgr.Create(snap.CWD)
+	if err != nil {
+		return "", err
+	}
+	sess, _ := a.termMgr.Get(id)
+	go a.readTerminalOutput(id, sess)
+	return id, nil
+}
+
 func (a *App) WriteToTerminal(tabId, data string) error {
 	sess, err := a.termMgr.Get(tabId)
 	if err != nil {

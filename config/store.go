@@ -80,6 +80,45 @@ func (s *Store) SaveWorkspace(wsPath string) error {
 	return os.WriteFile(filepath.Join(s.dir, "workspaces.json"), data, 0644)
 }
 
+
+// TerminalSnapshot represents a persisted terminal UI/session snapshot.
+type TerminalSnapshot struct {
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Type      string `json:"type"`
+	Workspace string `json:"workspace"`
+	CWD       string `json:"cwd"`
+	SSHName   string `json:"sshName,omitempty"`
+	Output    string `json:"output"`
+	Restored  bool   `json:"restored"`
+	Active    bool   `json:"active,omitempty"`
+	UpdatedAt string `json:"updatedAt"`
+}
+
+func (s *Store) LoadTerminalSnapshots() ([]TerminalSnapshot, error) {
+	path := filepath.Join(s.dir, "terminal-sessions.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var items []TerminalSnapshot
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s *Store) SaveTerminalSnapshots(items []TerminalSnapshot) error {
+	data, err := json.MarshalIndent(items, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.dir, "terminal-sessions.json"), data, 0644)
+}
+
 // ─── Startup Commands ─────────────────────────────────
 
 func (s *Store) LoadStartupCommands() ([]StartupCommand, error) {

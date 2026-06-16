@@ -80,6 +80,7 @@ onMounted(async () => {
   if (startupWs) {
     await ws.openWorkspace(startupWs)
   }
+  await term.loadSnapshots()
 })
 </script>
 

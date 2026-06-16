@@ -58,6 +58,36 @@ export namespace config {
 	        this.command = source["command"];
 	    }
 	}
+	export class TerminalSnapshot {
+	    id: string;
+	    title: string;
+	    type: string;
+	    workspace: string;
+	    cwd: string;
+	    sshName?: string;
+	    output: string;
+	    restored: boolean;
+	    active?: boolean;
+	    updatedAt: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new TerminalSnapshot(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.id = source["id"];
+	        this.title = source["title"];
+	        this.type = source["type"];
+	        this.workspace = source["workspace"];
+	        this.cwd = source["cwd"];
+	        this.sshName = source["sshName"];
+	        this.output = source["output"];
+	        this.restored = source["restored"];
+	        this.active = source["active"];
+	        this.updatedAt = source["updatedAt"];
+	    }
+	}
 	export class WorkspaceEntry {
 	    path: string;
 	    name: string;
