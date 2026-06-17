@@ -119,6 +119,47 @@ func (s *Store) SaveTerminalSnapshots(items []TerminalSnapshot) error {
 	return os.WriteFile(filepath.Join(s.dir, "terminal-sessions.json"), data, 0644)
 }
 
+
+// AIConfigGroup represents a shared AI configuration profile.
+type AIConfigGroup struct {
+	Name       string          `json:"name"`
+	APIKey     string          `json:"apiKey"`
+	BaseURL    string          `json:"baseURL"`
+	Models     []string        `json:"models"`
+	ClaudeCode ClaudeCodeSlots `json:"claudeCode"`
+}
+
+// ClaudeCodeSlots maps the three Claude Code model slots to model indexes.
+type ClaudeCodeSlots struct {
+	OpusIndex   int `json:"opusIndex"`
+	SonnetIndex int `json:"sonnetIndex"`
+	HaikuIndex  int `json:"haikuIndex"`
+}
+
+func (s *Store) LoadAIConfigGroups() ([]AIConfigGroup, error) {
+	path := filepath.Join(s.dir, "ai-config-groups.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var groups []AIConfigGroup
+	if err := json.Unmarshal(data, &groups); err != nil {
+		return nil, err
+	}
+	return groups, nil
+}
+
+func (s *Store) SaveAIConfigGroups(groups []AIConfigGroup) error {
+	data, err := json.MarshalIndent(groups, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.dir, "ai-config-groups.json"), data, 0644)
+}
+
 // ─── Startup Commands ─────────────────────────────────
 
 func (s *Store) LoadStartupCommands() ([]StartupCommand, error) {

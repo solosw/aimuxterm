@@ -37,6 +37,7 @@ onMounted(async () => {
     fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
     term.open(el)
+    term.write('[2J[H')
     term.write(tab.value.output || '[无输出]')
     requestAnimationFrame(() => {
       if (fitAddon && el.offsetParent !== null) {

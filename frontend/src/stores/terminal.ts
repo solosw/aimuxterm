@@ -47,7 +47,7 @@ export const useTerminalStore = defineStore('terminal', () => {
       id: t.id,
       title: t.title,
       type: t.type,
-      workspace: ws.info?.path || '',
+      workspace: ws.info?.path || (tabs.value[0]?.cwd || ''),
       cwd: t.cwd,
       sshName: t.sshName || '',
       output: t.output || '',
@@ -87,7 +87,7 @@ export const useTerminalStore = defineStore('terminal', () => {
         return null
       }
       counter++
-      const tab: TabItem = { id, title: `终端 ${counter}`, type: 'local', cwd: ws.info?.isRemote ? '' : (ws.info?.path || ''), output: '' }
+      const tab: TabItem = { id, title: `终端 ${counter}`, type: 'local', cwd: ws.info?.path || '', output: '' }
       tabs.value.push(tab)
       activeTabId.value = id
       scheduleSave()
@@ -106,8 +106,8 @@ export const useTerminalStore = defineStore('terminal', () => {
       const snap = new config.TerminalSnapshot({
         id: tab.id,
         title: tab.title,
-        type: tab.type,
-        workspace: ws.info?.path || '',
+        type: tab.sshName ? 'ssh' : 'local',
+        workspace: ws.info?.path || (tabs.value[0]?.cwd || ''),
         cwd: tab.cwd,
         sshName: tab.sshName || '',
         output: tab.output || '',

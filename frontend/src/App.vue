@@ -12,10 +12,12 @@ import FilePreviewPanel from './components/FilePreviewPanel.vue'
 import FileChangesPanel from './components/FileChangesPanel.vue'
 import StartupCommandPicker from './components/StartupCommandPicker.vue'
 import StartupCommandSettings from './components/StartupCommandSettings.vue'
+import AIConfigSettings from './components/AIConfigSettings.vue'
 
 const ws = useWorkspaceStore()
 const term = useTerminalStore()
 const showSettings = ref(false)
+const showAISettings = ref(false)
 const fc = useFileChangesStore()
 
 function escapeCdPath(p: string) {
@@ -44,6 +46,10 @@ async function onPickerDismiss() {
 function onPickerSettings() {
   showSettings.value = true
   ws.showStartupPicker = false
+}
+
+function onOpenAISettings() {
+  showAISettings.value = true
 }
 
 // Resizable panel widths
@@ -87,6 +93,7 @@ onMounted(async () => {
 <template>
   <div class="app-layout">
     <WorkspaceBar />
+    <button class="ai-settings-fab" @click="onOpenAISettings">AI 配置</button>
     <div class="main-area">
       <FileTreePanel v-if="ws.hasWorkspace" :style="{ width: treeWidth + 'px' }" />
       <div
@@ -118,6 +125,10 @@ onMounted(async () => {
       v-if="showSettings"
       @close="showSettings = false"
     />
+    <AIConfigSettings
+      v-if="showAISettings"
+      @close="showAISettings = false"
+    />
   </div>
 </template>
 
@@ -144,4 +155,19 @@ onMounted(async () => {
 .resize-handle:hover {
   background: #58a6ff;
 }
+.ai-settings-fab {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 120;
+  background: #2563eb;
+  border: 1px solid #1d4ed8;
+  color: #fff;
+  border-radius: 999px;
+  padding: 10px 14px;
+  font-weight: 700;
+  cursor: pointer;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+}
+.ai-settings-fab:hover { background: #1d4ed8; }
 </style>

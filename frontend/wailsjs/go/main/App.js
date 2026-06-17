@@ -10,6 +10,10 @@ export function AcceptFile(arg1) {
   return window['go']['main']['App']['AcceptFile'](arg1);
 }
 
+export function ApplyAIConfigGroup(arg1, arg2) {
+  return window['go']['main']['App']['ApplyAIConfigGroup'](arg1, arg2);
+}
+
 export function CloseTerminal(arg1) {
   return window['go']['main']['App']['CloseTerminal'](arg1);
 }
@@ -20,6 +24,14 @@ export function CreateSSHTerminal(arg1) {
 
 export function CreateTerminal() {
   return window['go']['main']['App']['CreateTerminal']();
+}
+
+export function DetectAIToolConfigPaths() {
+  return window['go']['main']['App']['DetectAIToolConfigPaths']();
+}
+
+export function GetAIConfigGroups() {
+  return window['go']['main']['App']['GetAIConfigGroups']();
 }
 
 export function GetChangedFiles() {
@@ -112,6 +124,10 @@ export function RevertAll() {
 
 export function RevertFile(arg1) {
   return window['go']['main']['App']['RevertFile'](arg1);
+}
+
+export function SaveAIConfigGroups(arg1) {
+  return window['go']['main']['App']['SaveAIConfigGroups'](arg1);
 }
 
 export function SaveFile(arg1, arg2) {

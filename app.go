@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -1237,11 +1238,7 @@ func (a *App) SaveFile(relPath, content string) error {
 func (a *App) CreateTerminal() (string, error) {
 	var id string
 	var err error
-	if a.isRemote {
-		id, err = a.termMgr.CreateSSH(a.remoteSSHCfg)
-	} else {
-		id, err = a.termMgr.Create(a.workspace)
-	}
+	id, err = a.termMgr.Create(a.workspace)
 	if err != nil {
 		return "", err
 	}
@@ -1264,9 +1261,28 @@ func (a *App) GetTerminalSnapshots() ([]config.TerminalSnapshot, error) {
 		return nil, err
 	}
 	workspace := a.workspace
+	migrated := false
+	for i := range items {
+		if items[i].Workspace != "" {
+			continue
+		}
+		if items[i].Type == "ssh" || items[i].SSHName != "" {
+			// Legacy SSH snapshot: use saved cwd if present, otherwise keep unresolved.
+			items[i].Workspace = items[i].CWD
+		} else {
+			// Legacy local snapshot: cwd is the local workspace path.
+			items[i].Workspace = items[i].CWD
+		}
+		if items[i].Workspace != "" {
+			migrated = true
+		}
+	}
+	if migrated {
+		_ = a.cfgStore.SaveTerminalSnapshots(items)
+	}
 	filtered := make([]config.TerminalSnapshot, 0, len(items))
 	for _, item := range items {
-		if item.Workspace == "" || item.Workspace == workspace {
+		if item.Workspace == workspace {
 			item.Restored = true
 			filtered = append(filtered, item)
 		}
@@ -1282,7 +1298,7 @@ func (a *App) SaveTerminalSnapshots(items []config.TerminalSnapshot) error {
 }
 
 func (a *App) ReconnectTerminal(snap config.TerminalSnapshot) (string, error) {
-	if snap.Type == "ssh" {
+	if snap.Type == "ssh" || snap.SSHName != "" {
 		if a.cfgStore == nil {
 			return "", fmt.Errorf("配置存储不可用")
 		}
@@ -1371,6 +1387,199 @@ func (a *App) RemoveSSHConfig(name string) error {
 		return nil
 	}
 	return a.cfgStore.RemoveSSHConfig(name)
+}
+
+
+// ─── AI Configs ──────────────────────────────────────
+
+type AIToolPaths struct {
+	ClaudeCode string `json:"claudeCode"`
+	Codex      string `json:"codex"`
+	OpenCode   string `json:"openCode"`
+}
+
+func (a *App) GetAIConfigGroups() ([]config.AIConfigGroup, error) {
+	if a.cfgStore == nil {
+		return nil, nil
+	}
+	return a.cfgStore.LoadAIConfigGroups()
+}
+
+func (a *App) SaveAIConfigGroups(groups []config.AIConfigGroup) error {
+	if a.cfgStore == nil {
+		return fmt.Errorf("配置存储不可用")
+	}
+	return a.cfgStore.SaveAIConfigGroups(groups)
+}
+
+func (a *App) DetectAIToolConfigPaths() AIToolPaths {
+	home := ""
+	if a.isRemote && a.remoteClient != nil {
+		home = a.remoteHomeDir()
+	} else {
+		home, _ = os.UserHomeDir()
+	}
+	paths := AIToolPaths{}
+	if home == "" {
+		return paths
+	}
+	if a.isRemote {
+		paths.ClaudeCode = path.Join(home, ".claude", "settings.json")
+		paths.Codex = path.Join(home, ".codex", "config.json")
+		paths.OpenCode = path.Join(home, ".config", "opencode", "opencode.json")
+	} else {
+		paths.ClaudeCode = filepath.Join(home, ".claude", "settings.json")
+		paths.Codex = filepath.Join(home, ".codex", "config.json")
+		paths.OpenCode = filepath.Join(home, ".config", "opencode", "opencode.json")
+	}
+	return paths
+}
+
+func (a *App) remoteHomeDir() string {
+	if a.remoteClient == nil {
+		return ""
+	}
+	sess, err := a.remoteClient.NewSession()
+	if err != nil {
+		return ""
+	}
+	defer sess.Close()
+	out, err := sess.Output("printf %s \"$HOME\"")
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func (a *App) ApplyAIConfigGroup(group config.AIConfigGroup, target string) error {
+	paths := a.DetectAIToolConfigPaths()
+	if target == "" || target == "all" || target == "claudeCode" {
+		if err := a.writeClaudeCodeConfig(paths.ClaudeCode, group); err != nil {
+			return err
+		}
+	}
+	if target == "" || target == "all" || target == "codex" {
+		if err := a.writeSimpleModelListConfig(paths.Codex, group); err != nil {
+			return err
+		}
+	}
+	if target == "" || target == "all" || target == "openCode" {
+		if err := a.writeSimpleModelListConfig(paths.OpenCode, group); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *App) writeClaudeCodeConfig(path string, group config.AIConfigGroup) error {
+	if group.ClaudeCode.OpusIndex < 0 || group.ClaudeCode.OpusIndex >= len(group.Models) {
+		return fmt.Errorf("Claude Code Opus 模型索引无效")
+	}
+	if group.ClaudeCode.SonnetIndex < 0 || group.ClaudeCode.SonnetIndex >= len(group.Models) {
+		return fmt.Errorf("Claude Code Sonnet 模型索引无效")
+	}
+	if group.ClaudeCode.HaikuIndex < 0 || group.ClaudeCode.HaikuIndex >= len(group.Models) {
+		return fmt.Errorf("Claude Code Haiku 模型索引无效")
+	}
+	cfg := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	env, _ := cfg["env"].(map[string]any)
+	if env == nil {
+		env = map[string]any{}
+	}
+	env["ANTHROPIC_AUTH_TOKEN"] = group.APIKey
+	env["ANTHROPIC_BASE_URL"] = group.BaseURL
+	env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = group.Models[group.ClaudeCode.OpusIndex]
+	env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = group.Models[group.ClaudeCode.SonnetIndex]
+	env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = group.Models[group.ClaudeCode.HaikuIndex]
+	env["ANTHROPIC_SMALL_FAST_MODEL"] = group.Models[group.ClaudeCode.HaikuIndex]
+	cfg["env"] = env
+	if _, ok := cfg["model"]; !ok {
+		cfg["model"] = "opus"
+	}
+	return a.writeJSONFileForTarget(path, cfg)
+}
+
+func (a *App) writeSimpleModelListConfig(path string, group config.AIConfigGroup) error {
+	cfg := map[string]any{}
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &cfg)
+	}
+	if strings.Contains(strings.ToLower(path), "opencode") {
+		cfg = map[string]any{
+			"provider": map[string]any{
+				"openai": map[string]any{
+					"options": map[string]any{
+						"baseURL": group.BaseURL,
+						"apiKey":  group.APIKey,
+					},
+					"models": buildOpenCodeModels(group.Models),
+				},
+			},
+			"$schema": "https://opencode.ai/config.json",
+		}
+		return a.writeJSONFileForTarget(path, cfg)
+	}
+	cfg["apiKey"] = group.APIKey
+	cfg["baseURL"] = group.BaseURL
+	cfg["models"] = group.Models
+	if len(group.Models) > 0 {
+		cfg["defaultModel"] = group.Models[0]
+	}
+	return a.writeJSONFileForTarget(path, cfg)
+}
+
+func buildOpenCodeModels(models []string) map[string]any {
+	out := map[string]any{}
+	for _, m := range models {
+		if strings.TrimSpace(m) == "" {
+			continue
+		}
+		out[m] = map[string]any{
+			"name": m,
+		}
+	}
+	return out
+}
+
+func writeJSONFile(path string, cfg map[string]any) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func (a *App) writeJSONFileForTarget(path string, cfg map[string]any) error {
+	if !a.isRemote || a.remoteSFTP == nil {
+		return writeJSONFile(path, cfg)
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := a.remoteSFTP.MkdirAll(pathpkgDir(path)); err != nil {
+		return err
+	}
+	f, err := a.remoteSFTP.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, err = f.Write(data)
+	return err
+}
+
+func pathpkgDir(p string) string {
+	if idx := strings.LastIndex(p, "/"); idx >= 0 {
+		return p[:idx]
+	}
+	return "."
 }
 
 // ─── Startup Commands ──────────────────────────────────
