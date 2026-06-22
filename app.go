@@ -1238,7 +1238,11 @@ func (a *App) SaveFile(relPath, content string) error {
 func (a *App) CreateTerminal() (string, error) {
 	var id string
 	var err error
-	id, err = a.termMgr.Create(a.workspace)
+	if a.isRemote {
+		id, err = a.termMgr.CreateSSH(a.remoteSSHCfg)
+	} else {
+		id, err = a.termMgr.Create(a.workspace)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -1246,7 +1250,7 @@ func (a *App) CreateTerminal() (string, error) {
 	go a.readTerminalOutput(id, sess)
 
 	if a.isRemote && a.remotePath != "" {
-		sess.Write([]byte("cd '" + a.remotePath + "'\n"))
+		sess.Write([]byte("cd " + shellQuote(a.remotePath) + "\n"))
 	}
 	return id, nil
 }

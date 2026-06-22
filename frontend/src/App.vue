@@ -29,16 +29,18 @@ async function onPickerSelect(cmd: config.StartupCommand) {
   const id = await CreateTerminal()
   if (id) {
     term.addSSHTab(id, cmd.name)
-    
+
     await WriteToTerminal(id, cmd.command + '\n')
-    await WriteToTerminal(id, 'cd "' + escapeCdPath(ws.info!.path) + '"\n')
+    if (ws.info && !ws.info.isRemote) {
+      await WriteToTerminal(id, 'cd "' + escapeCdPath(ws.info.path) + '"\n')
+    }
   }
 }
 
 async function onPickerDismiss() {
   ws.showStartupPicker = false
   const tab = await term.createTerminal()
-  if (tab && ws.info) {
+  if (tab && ws.info && !ws.info.isRemote) {
     await WriteToTerminal(tab.id, 'cd "' + escapeCdPath(ws.info.path) + '"\n')
   }
 }
