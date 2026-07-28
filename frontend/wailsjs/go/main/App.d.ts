@@ -20,6 +20,10 @@ export function DetectAIToolConfigPaths():Promise<main.AIToolPaths>;
 
 export function GetAIConfigGroups():Promise<Array<config.AIConfigGroup>>;
 
+export function GetAppearance():Promise<config.Appearance>;
+
+export function GetBackgroundImageData(arg1:string):Promise<string>;
+
 export function GetChangedFiles():Promise<Array<snapshot.FileChange>>;
 
 export function GetFileContent(arg1:string):Promise<string>;
@@ -68,6 +72,8 @@ export function RevertFile(arg1:string):Promise<void>;
 
 export function SaveAIConfigGroups(arg1:Array<config.AIConfigGroup>):Promise<void>;
 
+export function SaveAppearance(arg1:config.Appearance):Promise<void>;
+
 export function SaveFile(arg1:string,arg2:string):Promise<void>;
 
 export function SaveRemoteWorkspace(arg1:config.RemoteWorkspaceEntry):Promise<void>;
@@ -77,6 +83,8 @@ export function SaveSSHConfig(arg1:config.SSHConfig):Promise<void>;
 export function SaveStartupCommands(arg1:Array<config.StartupCommand>):Promise<void>;
 
 export function SaveTerminalSnapshots(arg1:Array<config.TerminalSnapshot>):Promise<void>;
+
+export function SelectBackgroundImage():Promise<string>;
 
 export function SelectWorkspace():Promise<main.WorkspaceInfo>;
 

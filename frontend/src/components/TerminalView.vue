@@ -1,13 +1,39 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { useTerminalStore } from '../stores/terminal'
+import { useAppearanceStore } from '../stores/appearance'
 import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps<{ tabId: string; showCmdInput?: boolean }>()
 
 const store = useTerminalStore()
+const appearance = useAppearanceStore()
+
+/**
+ * xterm paints its own canvas background, so it cannot inherit the panel
+ * surface colour from CSS. Build the theme from the same alpha the panels use
+ * (22,22,24 is --surface-app) and keep it in sync via the watcher below.
+ */
+function termTheme() {
+  // Keep canvas alpha in sync with --panel-alpha. Parent DOM layers must also
+  // be transparent (see styles below) or this rgba is painted over a solid fill.
+  return {
+    background: `rgba(22, 22, 24, ${appearance.panelOpacity})`,
+    foreground: '#cccccc',
+    cursor: '#ffffff',
+    selectionBackground: 'rgba(68, 68, 68, 0.6)',
+  }
+}
+
+function applyTermTheme() {
+  if (!term) return
+  // Assign a new object so xterm's option proxy notices the change and
+  // repaints the background layer (in-place mutation is a no-op on some versions).
+  term.options.theme = { ...termTheme() }
+  term.refresh(0, Math.max(0, term.rows - 1))
+}
 const termEl = ref<HTMLDivElement>()
 const isDragOver = ref(false)
 const cmdInput = ref('')
@@ -27,12 +53,8 @@ onMounted(async () => {
       disableStdin: true,
       fontSize: 14,
       fontFamily: 'Consolas, "Courier New", monospace',
-      theme: {
-        background: '#161618',
-        foreground: '#cccccc',
-        cursor: '#ffffff',
-        selectionBackground: '#444'
-      }
+      theme: termTheme(),
+      allowTransparency: true
     })
     fitAddon = new FitAddon()
     term.loadAddon(fitAddon)
@@ -51,12 +73,8 @@ onMounted(async () => {
     cursorBlink: true,
     fontSize: 14,
     fontFamily: 'Consolas, "Courier New", monospace',
-    theme: {
-      background: '#161618',
-      foreground: '#cccccc',
-      cursor: '#ffffff',
-      selectionBackground: '#444'
-    },
+    theme: termTheme(),
+    allowTransparency: true,
     allowProposedApi: true
   })
 
@@ -88,6 +106,11 @@ onMounted(async () => {
     }
   })
   observer.observe(el)
+})
+
+// Repaint the xterm canvas when the user drags the panel-opacity slider.
+watch(() => appearance.panelOpacity, () => {
+  applyTermTheme()
 })
 
 function sendCommand() {
@@ -156,7 +179,8 @@ onUnmounted(() => {
 .restored-terminal {
   width: 100%;
   height: 100%;
-  background: #161618;
+  /* Transparent: xterm canvas owns the dimmed fill via allowTransparency. */
+  background: transparent;
   color: #c9d1d9;
   display: flex;
   flex-direction: column;
@@ -196,9 +220,21 @@ onUnmounted(() => {
 .terminal-container {
   width: 100%;
   height: 100%;
+  /* Must stay transparent so the xterm canvas alpha (allowTransparency)
+     can reveal the app background image under the terminal. */
+  background: transparent;
 }
 .terminal-container.drag-over {
   box-shadow: inset 0 0 0 2px #58a6ff;
+}
+/* xterm.css paints solid #000 on .xterm / .xterm-viewport by default, which
+   completely hides allowTransparency. Force those DOM layers transparent so
+   only the canvas theme background (with alpha) remains. */
+.terminal-container :deep(.xterm),
+.terminal-container :deep(.xterm-viewport),
+.terminal-container :deep(.xterm-screen) {
+  background-color: transparent !important;
+  background: transparent !important;
 }
 .terminal-container.has-cmd-input {
   height: calc(100% - 80px);

@@ -1,3 +1,18 @@
+:root {
+  /* Written by stores/appearance.ts. Defaults here keep the UI fully opaque
+     when no appearance config has loaded yet (or when it fails to load).
+     Background image is applied via inline style on .app-background, not CSS vars. */
+  --panel-alpha: 1;
+
+  /* Panel surface colours. Every panel uses these so a single --panel-alpha
+     write restyles the whole UI and lets the background image show through. */
+  --surface-app: rgba(22, 22, 24, var(--panel-alpha));
+  --surface-bar: rgba(26, 26, 28, var(--panel-alpha));
+  --surface-tree: rgba(20, 20, 22, var(--panel-alpha));
+  --surface-editor: rgba(13, 17, 23, var(--panel-alpha));
+  --surface-toolbar: rgba(22, 27, 34, var(--panel-alpha));
+}
+
 * {
   margin: 0;
   padding: 0;

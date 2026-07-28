@@ -11,6 +11,7 @@ interface RemoteEntry {
   isDir: boolean
   size: number
   modTime: number
+  isBinary?: boolean
 }
 
 interface TreeNode {
@@ -19,6 +20,7 @@ interface TreeNode {
   isDir: boolean
   children: TreeNode[] | null  // null = not loaded, [] or [...] = loaded
   loading?: boolean
+  isBinary?: boolean           // listed by name only, content never loaded
 }
 
 interface FlatNode {
@@ -48,13 +50,14 @@ function entriesToTree(entries: RemoteEntry[]): TreeNode[] {
     path: e.path,
     isDir: e.isDir,
     children: e.isDir ? null : [],
+    isBinary: !!e.isBinary,
   }))
 }
 
 // ── Local: static tree from flat file list ──
-function buildTree(files: string[]): TreeNode[] {
+function buildTree(files: string[], binaryFiles: string[] = []): TreeNode[] {
   const root: TreeNode = { name: '', path: '', isDir: true, children: [] }
-  for (const file of files) {
+  const addPath = (file: string, isBinary: boolean) => {
     const parts = file.replace(/\\/g, '/').split('/')
     let current = root
     let currentPath = ''
@@ -65,12 +68,15 @@ function buildTree(files: string[]): TreeNode[] {
       let child = current.children!.find(c => c.name === part)
       if (!child) {
         child = { name: part, path: currentPath, isDir: !isLast, children: [] }
+        if (isLast) child.isBinary = isBinary
         current.children!.push(child)
       }
       if (!isLast) child.isDir = true
       current = child
     }
   }
+  for (const file of files) addPath(file, false)
+  for (const file of binaryFiles) addPath(file, true)
   sortChildren(root.children!)
   return root.children!
 }
@@ -101,8 +107,8 @@ watch(() => ws.info, async (newInfo) => {
   }
   if (newInfo.isRemote) {
     await initRemoteTree()
-  } else if (newInfo.files) {
-    tree.value = buildTree(newInfo.files)
+  } else if (newInfo.files || newInfo.otherFiles) {
+    tree.value = buildTree(newInfo.files || [], newInfo.otherFiles || [])
   }
 }, { immediate: true })
 
@@ -117,7 +123,7 @@ function handleClick(node: TreeNode) {
         loadRemoteChildren(node)
       }
     }
-  } else {
+  } else if (!node.isBinary) {
     ws.openPreviewFile(node.path)
   }
 }
@@ -164,8 +170,10 @@ function renderTree(nodes: TreeNode[], depth: number = 0): FlatNode[] {
         v-for="item in renderTree(tree)"
         :key="item.node.path"
         class="tree-node"
+        :class="{ 'is-binary': item.node.isBinary }"
         :style="{ paddingLeft: item.padding + 'px' }"
         :draggable="!item.node.isDir"
+        :title="item.node.isBinary ? item.node.name + ' — 二进制文件，不加载内容' : item.node.name"
         @click="handleClick(item.node)"
         @dragstart="onDragStart($event, item.node)"
       >
@@ -180,7 +188,7 @@ function renderTree(nodes: TreeNode[], depth: number = 0): FlatNode[] {
 <style scoped>
 .file-tree-panel {
   width: 220px;
-  background: #141416;
+  background: var(--surface-tree);
   border-right: 1px solid #2a2a2e;
   display: flex;
   flex-direction: column;
@@ -226,6 +234,14 @@ function renderTree(nodes: TreeNode[], depth: number = 0): FlatNode[] {
 .tree-node:hover {
   background: #1e1e22;
   color: #ddd;
+}
+/* Binary/oversized files: name only, not previewable */
+.tree-node.is-binary {
+  color: #6b6b73;
+  cursor: default;
+}
+.tree-node.is-binary:hover {
+  color: #8a8a93;
 }
 .node-icon {
   flex-shrink: 0;

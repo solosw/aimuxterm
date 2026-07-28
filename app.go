@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -17,11 +18,11 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"golang.org/x/crypto/ssh"
 
-	"just-warp-go/config"
-	"just-warp-go/scanner"
-	"just-warp-go/snapshot"
-	"just-warp-go/terminal"
-	"just-warp-go/watcher"
+	"aimuxterm/config"
+	"aimuxterm/scanner"
+	"aimuxterm/snapshot"
+	"aimuxterm/terminal"
+	"aimuxterm/watcher"
 )
 
 // remoteFileEntry holds file metadata for remote workspaces.
@@ -61,7 +62,9 @@ var remoteSkipDirs = map[string]bool{
 	".nuxt": true, ".output": true, "coverage": true, ".nyc_output": true,
 }
 
-func (a *App) isRemoteNoise(relPath string, isDir bool) bool {
+// isRemoteHidden reports whether a remote entry is structural noise: a skipped
+// directory, a dotfile, or a .gitignore match. It says nothing about content type.
+func (a *App) isRemoteHidden(relPath string, isDir bool) bool {
 	name := path.Base(relPath)
 	if isDir {
 		if remoteSkipDirs[name] || (strings.HasPrefix(name, ".") && name != ".gitignore") {
@@ -77,9 +80,25 @@ func (a *App) isRemoteNoise(relPath string, isDir bool) bool {
 	if a.remoteGitignore != nil && a.remoteGitignore.Match(relPath) {
 		return true
 	}
-	// Extension-only filter for fast scanning (no download)
+	return false
+}
+
+// maxRemoteTextSize is the size limit above which a remote file is not snapshot-tracked.
+const maxRemoteTextSize = 5 * 1024 * 1024
+
+// isRemoteBinaryExt is an extension-only binary check for fast scanning (no download).
+func isRemoteBinaryExt(relPath string) bool {
 	ext := strings.ToLower(path.Ext(relPath))
 	return !snapshot.IsTextFile(ext, nil)
+}
+
+// isRemoteNoise reports whether a remote file should be excluded from snapshot
+// tracking: structural noise or binary content.
+func (a *App) isRemoteNoise(relPath string, isDir bool) bool {
+	if a.isRemoteHidden(relPath, isDir) {
+		return true
+	}
+	return isRemoteBinaryExt(relPath)
 }
 
 // fingerprintFor returns the fingerprint for a file from the scanned remote entries.
@@ -128,6 +147,7 @@ type App struct {
 	cfgStore *config.Store
 
 	scannedFiles         []string
+	scannedOtherFiles    []string
 	scannedRemoteEntries []remoteFileEntry
 	mu                   sync.Mutex
 }
@@ -240,10 +260,12 @@ func (a *App) closeRemote() {
 // ─── Workspace ───────────────────────────────────────
 
 type WorkspaceInfo struct {
-	Path         string                `json:"path"`
-	Name         string                `json:"name"`
-	FileCount    int                   `json:"fileCount"`
-	Files        []string              `json:"files"`
+	Path      string   `json:"path"`
+	Name      string   `json:"name"`
+	FileCount int      `json:"fileCount"`
+	Files     []string `json:"files"`
+	// OtherFiles lists files shown in the tree but never loaded: binary or oversized.
+	OtherFiles   []string              `json:"otherFiles"`
 	IsRemote     bool                  `json:"isRemote"`
 	ChangedFiles []snapshot.FileChange `json:"changedFiles"`
 }
@@ -279,6 +301,7 @@ func (a *App) OpenWorkspace(path string) (*WorkspaceInfo, error) {
 		return nil, fmt.Errorf("扫描失败: %w", err)
 	}
 	a.scannedFiles = result.Files
+	a.scannedOtherFiles = result.OtherFiles
 
 	if err := a.snapEng.LoadManifest(); err != nil {
 		return nil, fmt.Errorf("加载快照失败: %w", err)
@@ -304,12 +327,14 @@ func (a *App) OpenWorkspace(path string) (*WorkspaceInfo, error) {
 }
 
 // RemoteDirEntry represents a single directory entry on the remote server.
+// IsBinary marks entries whose content is never loaded (name-only display).
 type RemoteDirEntry struct {
-	Name    string `json:"name"`
-	Path    string `json:"path"`
-	IsDir   bool   `json:"isDir"`
-	Size    int64  `json:"size"`
-	ModTime int64  `json:"modTime"`
+	Name     string `json:"name"`
+	Path     string `json:"path"`
+	IsDir    bool   `json:"isDir"`
+	Size     int64  `json:"size"`
+	ModTime  int64  `json:"modTime"`
+	IsBinary bool   `json:"isBinary"`
 }
 
 // ─── Remote Workspace (SFTP Direct) ──────────────────
@@ -353,15 +378,17 @@ func (a *App) ListRemoteDir(dir string) ([]RemoteDirEntry, error) {
 	}
 	for _, info := range infos {
 		entryPath := path.Join(dir, info.Name())
-		if a.isRemoteNoise(entryPath, info.IsDir()) {
+		if a.isRemoteHidden(entryPath, info.IsDir()) {
 			continue
 		}
+		binary := !info.IsDir() && (isRemoteBinaryExt(entryPath) || info.Size() > maxRemoteTextSize)
 		entries = append(entries, RemoteDirEntry{
-			Name:    info.Name(),
-			Path:    entryPath,
-			IsDir:   info.IsDir(),
-			Size:    info.Size(),
-			ModTime: info.ModTime().Unix(),
+			Name:     info.Name(),
+			Path:     entryPath,
+			IsDir:    info.IsDir(),
+			Size:     info.Size(),
+			ModTime:  info.ModTime().Unix(),
+			IsBinary: binary,
 		})
 	}
 	return entries, nil
@@ -456,6 +483,7 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 	a.remoteSSHCfg = tCfg
 	a.scannedRemoteEntries = entries
 	a.scannedFiles = entriesToPaths(entries)
+	a.scannedOtherFiles = nil // remote tree loads lazily via ListRemoteDir
 	a.snapEng = snapshot.NewEngine(remotePath)
 
 	// Ensure .warp-snapshots/ exists on remote
@@ -556,7 +584,7 @@ func (a *App) listRemoteFiles(c *sftp.Client, root string) ([]remoteFileEntry, e
 		}
 		rel := strings.TrimPrefix(path.Clean(w.Path()), path.Clean(root))
 		rel = strings.TrimPrefix(rel, "/")
-		if rel == "" || a.isRemoteNoise(rel, false) || s.Size() > 5*1024*1024 {
+		if rel == "" || a.isRemoteNoise(rel, false) || s.Size() > maxRemoteTextSize {
 			continue
 		}
 		entries = append(entries, remoteFileEntry{
@@ -945,8 +973,9 @@ func (a *App) makeWorkspaceInfo() *WorkspaceInfo {
 	return &WorkspaceInfo{
 		Path:         a.workspace,
 		Name:         name,
-		FileCount:    len(a.scannedFiles),
+		FileCount:    len(a.scannedFiles) + len(a.scannedOtherFiles),
 		Files:        a.scannedFiles,
+		OtherFiles:   a.scannedOtherFiles,
 		IsRemote:     a.isRemote,
 		ChangedFiles: changes,
 	}
@@ -1177,6 +1206,12 @@ func (a *App) GetFileContent(path string) (string, error) {
 	defer a.mu.Unlock()
 	if a.workspace == "" || a.snapEng == nil {
 		return "", fmt.Errorf("未选择工作区")
+	}
+	// Never load content for files the scanner classified as non-text.
+	for _, other := range a.scannedOtherFiles {
+		if other == path {
+			return "", fmt.Errorf("二进制或超大文件，不支持预览")
+		}
 	}
 	if a.isRemote {
 		data, err := a.readRemoteFile(path)
@@ -1416,6 +1451,87 @@ func (a *App) SaveAIConfigGroups(groups []config.AIConfigGroup) error {
 	return a.cfgStore.SaveAIConfigGroups(groups)
 }
 
+// ─── Appearance ──────────────────────────────────────
+
+// maxBackgroundImageSize caps the image we are willing to inline as a data URL.
+const maxBackgroundImageSize = 12 * 1024 * 1024
+
+// backgroundImageMIME maps supported image extensions to their MIME type.
+// Only these extensions are accepted as background images.
+var backgroundImageMIME = map[string]string{
+	".png":  "image/png",
+	".jpg":  "image/jpeg",
+	".jpeg": "image/jpeg",
+	".gif":  "image/gif",
+	".webp": "image/webp",
+	".bmp":  "image/bmp",
+}
+
+func (a *App) GetAppearance() (config.Appearance, error) {
+	if a.cfgStore == nil {
+		return config.DefaultAppearance(), nil
+	}
+	return a.cfgStore.LoadAppearance()
+}
+
+func (a *App) SaveAppearance(ap config.Appearance) error {
+	if a.cfgStore == nil {
+		return fmt.Errorf("配置存储不可用")
+	}
+	return a.cfgStore.SaveAppearance(ap)
+}
+
+// SelectBackgroundImage opens a picker and returns the chosen absolute path.
+// An empty return means the user cancelled.
+func (a *App) SelectBackgroundImage() (string, error) {
+	picked, err := runtime.OpenFileDialog(a.ctx, runtime.OpenDialogOptions{
+		Title: "选择背景图片",
+		Filters: []runtime.FileFilter{{
+			DisplayName: "图片 (*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp)",
+			Pattern:     "*.png;*.jpg;*.jpeg;*.gif;*.webp;*.bmp",
+		}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("选择图片失败: %w", err)
+	}
+	if picked == "" {
+		return "", nil
+	}
+	if _, err := a.GetBackgroundImageData(picked); err != nil {
+		return "", err
+	}
+	return picked, nil
+}
+
+// GetBackgroundImageData reads a local image and returns it as a data URL for
+// the webview, which cannot load arbitrary file:// paths itself. Only the
+// extensions in backgroundImageMIME are served, and only up to
+// maxBackgroundImageSize.
+func (a *App) GetBackgroundImageData(imgPath string) (string, error) {
+	if imgPath == "" {
+		return "", nil
+	}
+	mimeType, ok := backgroundImageMIME[strings.ToLower(filepath.Ext(imgPath))]
+	if !ok {
+		return "", fmt.Errorf("不支持的图片格式")
+	}
+	info, err := os.Stat(imgPath)
+	if err != nil {
+		return "", fmt.Errorf("读取图片失败: %w", err)
+	}
+	if info.IsDir() {
+		return "", fmt.Errorf("不支持的图片格式")
+	}
+	if info.Size() > maxBackgroundImageSize {
+		return "", fmt.Errorf("图片过大，请选择小于 12MB 的图片")
+	}
+	data, err := os.ReadFile(imgPath)
+	if err != nil {
+		return "", fmt.Errorf("读取图片失败: %w", err)
+	}
+	return "data:" + mimeType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
 func (a *App) DetectAIToolConfigPaths() AIToolPaths {
 	home := ""
 	if a.isRemote && a.remoteClient != nil {
@@ -1523,7 +1639,7 @@ func (a *App) writeCodexConfig(path string, group config.AIConfigGroup) error {
 		return fmt.Errorf("Codex 模型池不能为空")
 	}
 	content := fmt.Sprintf(`# ==========================================
-# Generated by just-warp-go AI config manager
+# Generated by aimuxterm AI config manager
 # ==========================================
 model = %q
 model_provider = %q
@@ -1696,6 +1812,7 @@ func (a *App) refreshScanLocked() {
 		return
 	}
 	a.scannedFiles = result.Files
+	a.scannedOtherFiles = result.OtherFiles
 }
 
 func (a *App) emitChanges() {

@@ -54,6 +54,22 @@ export namespace config {
 		    return a;
 		}
 	}
+	export class Appearance {
+	    backgroundImage: string;
+	    backgroundOpacity: number;
+	    panelOpacity: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new Appearance(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.backgroundImage = source["backgroundImage"];
+	        this.backgroundOpacity = source["backgroundOpacity"];
+	        this.panelOpacity = source["panelOpacity"];
+	    }
+	}
 	
 	export class RemoteWorkspaceEntry {
 	    name: string;
@@ -186,6 +202,7 @@ export namespace main {
 	    isDir: boolean;
 	    size: number;
 	    modTime: number;
+	    isBinary: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new RemoteDirEntry(source);
@@ -198,6 +215,7 @@ export namespace main {
 	        this.isDir = source["isDir"];
 	        this.size = source["size"];
 	        this.modTime = source["modTime"];
+	        this.isBinary = source["isBinary"];
 	    }
 	}
 	export class SSHConfig {
@@ -227,6 +245,7 @@ export namespace main {
 	    name: string;
 	    fileCount: number;
 	    files: string[];
+	    otherFiles: string[];
 	    isRemote: boolean;
 	    changedFiles: snapshot.FileChange[];
 	
@@ -240,6 +259,7 @@ export namespace main {
 	        this.name = source["name"];
 	        this.fileCount = source["fileCount"];
 	        this.files = source["files"];
+	        this.otherFiles = source["otherFiles"];
 	        this.isRemote = source["isRemote"];
 	        this.changedFiles = this.convertValues(source["changedFiles"], snapshot.FileChange);
 	    }

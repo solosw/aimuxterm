@@ -34,6 +34,14 @@ export function GetAIConfigGroups() {
   return window['go']['main']['App']['GetAIConfigGroups']();
 }
 
+export function GetAppearance() {
+  return window['go']['main']['App']['GetAppearance']();
+}
+
+export function GetBackgroundImageData(arg1) {
+  return window['go']['main']['App']['GetBackgroundImageData'](arg1);
+}
+
 export function GetChangedFiles() {
   return window['go']['main']['App']['GetChangedFiles']();
 }
@@ -130,6 +138,10 @@ export function SaveAIConfigGroups(arg1) {
   return window['go']['main']['App']['SaveAIConfigGroups'](arg1);
 }
 
+export function SaveAppearance(arg1) {
+  return window['go']['main']['App']['SaveAppearance'](arg1);
+}
+
 export function SaveFile(arg1, arg2) {
   return window['go']['main']['App']['SaveFile'](arg1, arg2);
 }
@@ -148,6 +160,10 @@ export function SaveStartupCommands(arg1) {
 
 export function SaveTerminalSnapshots(arg1) {
   return window['go']['main']['App']['SaveTerminalSnapshots'](arg1);
+}
+
+export function SelectBackgroundImage() {
+  return window['go']['main']['App']['SelectBackgroundImage']();
 }
 
 export function SelectWorkspace() {

@@ -127,7 +127,7 @@ function closeDiff() {
 <style scoped>
 .changes-panel {
   width: 280px;
-  background: #1a1a1c;
+  background: var(--surface-bar);
   border-left: 1px solid #333;
   display: flex;
   flex-direction: column;

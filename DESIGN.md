@@ -1,4 +1,4 @@
-# Just-Warp-Go 功能设计文档
+# aimuxterm 功能设计文档
 
 ## 1. 概述
 

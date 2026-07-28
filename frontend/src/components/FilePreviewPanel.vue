@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { ref, watch, computed } from 'vue'
+import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import DiffView from './DiffView.vue'
 import CodeEditor from './CodeEditor.vue'
 import { GetFileContent, GetFileDiff, SaveFile } from '../../wailsjs/go/main/App'
+import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useFileChangesStore } from '../stores/fileChanges'
 import { detectLang } from '../utils/detectLang'
+import { renderMarkdown, isSafeHref } from '../utils/renderMarkdown'
 
 const ws = useWorkspaceStore()
 const fc = useFileChangesStore()
@@ -22,17 +24,30 @@ const cache = ref<Record<string, {
   isEditing: boolean
   editContent: string
   saveError: string
+  /** Markdown files only: show the rendered document instead of the source. */
+  showRendered: boolean
 }>>({})
 
 const activeFile = computed(() => ws.activePreviewFile)
 const activeState = computed(() => activeFile.value ? cache.value[activeFile.value] : null)
 const isChanged = computed(() => !!activeFile.value && fc.changes.some(c => c.path === activeFile.value))
+const isMarkdown = computed(() => !!activeFile.value && isMarkdownPath(activeFile.value))
+const renderedHtml = computed(() => {
+  const st = activeState.value
+  if (!st || !isMarkdown.value) return ''
+  return renderMarkdown(st.content)
+})
+
+function isMarkdownPath(path: string): boolean {
+  return detectLang(path) === 'markdown'
+}
 
 function getOrCreate(path: string) {
   if (!cache.value[path]) {
     cache.value[path] = {
       content: '', highlightedHtml: '', loading: false, showDiff: false,
       oldContent: '', newContent: '', isEditing: false, editContent: '', saveError: '',
+      showRendered: isMarkdownPath(path),
     }
   }
   return cache.value[path]
@@ -86,6 +101,47 @@ async function toggleDiff() {
   }
 }
 
+function toggleRendered() {
+  const st = activeState.value
+  if (!st) return
+  st.showRendered = !st.showRendered
+}
+
+/** Resolve a relative markdown link against the directory of `fromPath`. */
+function resolveRelative(fromPath: string, href: string): string {
+  const dir = fromPath.replace(/\\/g, '/').split('/').slice(0, -1)
+  const out = href.startsWith('/') ? [] : dir
+  const parts = href.replace(/\\/g, '/').replace(/^\//, '').split('/')
+  const stack = [...out]
+  for (const part of parts) {
+    if (part === '' || part === '.') continue
+    if (part === '..') stack.pop()
+    else stack.push(part)
+  }
+  return stack.join('/')
+}
+
+/**
+ * Links inside rendered markdown must not navigate the webview away from the
+ * app: external targets go to the system browser, in-workspace targets open as
+ * another preview tab.
+ */
+function onRenderedClick(e: MouseEvent) {
+  const anchor = (e.target as HTMLElement | null)?.closest('a')
+  if (!anchor) return
+  e.preventDefault()
+  const href = anchor.getAttribute('href') || ''
+  if (!href || href.startsWith('#')) return
+  if (isSafeHref(href)) {
+    BrowserOpenURL(href)
+    return
+  }
+  if (/^[a-z][a-z0-9+.-]*:/i.test(href)) return // unknown scheme: ignore
+  if (!activeFile.value) return
+  const target = resolveRelative(activeFile.value, href.split(/[?#]/)[0])
+  if (target) ws.openPreviewFile(target)
+}
+
 function enterEdit() {
   const st = activeState.value
   if (!st) return
@@ -121,90 +177,314 @@ async function handleSave() {
 watch(activeFile, (path) => {
   if (path && !cache.value[path]) loadFile(path)
 }, { immediate: true })
+
+// ── Floating window: geometry, drag, resize ──
+const GEOM_KEY = 'preview-window-geometry'
+const MIN_W = 360
+const MIN_H = 220
+
+interface Geometry { x: number; y: number; w: number; h: number; maximized: boolean }
+
+function defaultGeometry(): Geometry {
+  const w = Math.min(760, Math.max(MIN_W, Math.round(window.innerWidth * 0.5)))
+  const h = Math.min(620, Math.max(MIN_H, Math.round(window.innerHeight * 0.7)))
+  return {
+    x: Math.max(8, window.innerWidth - w - 48),
+    y: Math.max(8, Math.round((window.innerHeight - h) / 2)),
+    w, h, maximized: false,
+  }
+}
+
+function loadGeometry(): Geometry {
+  try {
+    const raw = localStorage.getItem(GEOM_KEY)
+    if (raw) {
+      const g = JSON.parse(raw) as Geometry
+      if (typeof g?.x === 'number' && typeof g?.w === 'number') return g
+    }
+  } catch { }
+  return defaultGeometry()
+}
+
+const geom = ref<Geometry>(loadGeometry())
+const minimized = ref(false)
+
+function saveGeometry() {
+  try { localStorage.setItem(GEOM_KEY, JSON.stringify(geom.value)) } catch { }
+}
+
+const windowStyle = computed(() => {
+  if (geom.value.maximized) {
+    return { left: '0px', top: '0px', width: '100%', height: '100%' }
+  }
+  return {
+    left: geom.value.x + 'px',
+    top: geom.value.y + 'px',
+    width: geom.value.w + 'px',
+    height: minimized.value ? 'auto' : geom.value.h + 'px',
+  }
+})
+
+function clampIntoView() {
+  const g = geom.value
+  g.w = Math.min(Math.max(g.w, MIN_W), window.innerWidth)
+  g.h = Math.min(Math.max(g.h, MIN_H), window.innerHeight)
+  g.x = Math.min(Math.max(g.x, -g.w + 80), window.innerWidth - 80)
+  g.y = Math.min(Math.max(g.y, 0), window.innerHeight - 40)
+}
+
+// Shared pointer-drag driver: onMove receives the delta from drag start.
+function beginDrag(e: MouseEvent, onMove: (dx: number, dy: number) => void, cursor: string) {
+  e.preventDefault()
+  const startX = e.clientX
+  const startY = e.clientY
+  const move = (ev: MouseEvent) => onMove(ev.clientX - startX, ev.clientY - startY)
+  const up = () => {
+    document.removeEventListener('mousemove', move)
+    document.removeEventListener('mouseup', up)
+    document.body.style.cursor = ''
+    document.body.style.userSelect = ''
+    clampIntoView()
+    saveGeometry()
+  }
+  document.addEventListener('mousemove', move)
+  document.addEventListener('mouseup', up)
+  document.body.style.cursor = cursor
+  document.body.style.userSelect = 'none'
+}
+
+function startMove(e: MouseEvent) {
+  if (geom.value.maximized) return
+  const ox = geom.value.x
+  const oy = geom.value.y
+  beginDrag(e, (dx, dy) => {
+    geom.value.x = ox + dx
+    geom.value.y = oy + dy
+  }, 'move')
+}
+
+type Edge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw'
+
+function startResize(e: MouseEvent, edge: Edge) {
+  if (geom.value.maximized || minimized.value) return
+  const o = { ...geom.value }
+  const cursor = edge.length === 2 ? edge + '-resize' : edge === 'n' || edge === 's' ? 'ns-resize' : 'ew-resize'
+  beginDrag(e, (dx, dy) => {
+    const g = geom.value
+    if (edge.includes('e')) g.w = Math.max(MIN_W, o.w + dx)
+    if (edge.includes('s')) g.h = Math.max(MIN_H, o.h + dy)
+    if (edge.includes('w')) {
+      const w = Math.max(MIN_W, o.w - dx)
+      g.x = o.x + (o.w - w)
+      g.w = w
+    }
+    if (edge.includes('n')) {
+      const h = Math.max(MIN_H, o.h - dy)
+      g.y = o.y + (o.h - h)
+      g.h = h
+    }
+  }, cursor)
+}
+
+function toggleMaximize() {
+  geom.value.maximized = !geom.value.maximized
+  minimized.value = false
+  saveGeometry()
+}
+
+function toggleMinimize() {
+  minimized.value = !minimized.value
+}
+
+function closeWindow() {
+  for (const path of [...ws.previewFiles]) ws.closePreviewFile(path)
+}
+
+const onWindowResize = () => { clampIntoView(); saveGeometry() }
+onMounted(() => {
+  clampIntoView()
+  window.addEventListener('resize', onWindowResize)
+})
+onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
 </script>
 
 <template>
-  <div class="preview-panel">
-    <div class="panel-header">文件预览</div>
-    <div class="tab-bar" v-if="ws.previewFiles.length > 0">
-      <div
-        v-for="path in ws.previewFiles"
-        :key="path"
-        class="tab"
-        :class="{ active: path === ws.activePreviewFile }"
-        @click="ws.activePreviewFile = path"
-      >
-        <span>{{ getFileName(path) }}</span>
-        <button class="tab-close" @click.stop="ws.closePreviewFile(path)">×</button>
+  <div
+    class="preview-window"
+    :class="{ maximized: geom.maximized, minimized }"
+    :style="windowStyle"
+    role="dialog"
+    aria-label="文件预览窗口"
+  >
+    <div class="title-bar" @mousedown="startMove" @dblclick="toggleMaximize">
+      <span class="title-text">文件预览</span>
+      <div class="window-controls">
+        <button
+          class="win-btn"
+          :title="minimized ? '展开' : '折叠'"
+          :aria-label="minimized ? '展开' : '折叠'"
+          @mousedown.stop
+          @click="toggleMinimize"
+        >{{ minimized ? '▢' : '—' }}</button>
+        <button
+          class="win-btn"
+          :title="geom.maximized ? '还原' : '最大化'"
+          :aria-label="geom.maximized ? '还原' : '最大化'"
+          @mousedown.stop
+          @click="toggleMaximize"
+        >{{ geom.maximized ? '❐' : '□' }}</button>
+        <button
+          class="win-btn win-close"
+          title="关闭"
+          aria-label="关闭预览窗口"
+          @mousedown.stop
+          @click="closeWindow"
+        >×</button>
       </div>
     </div>
+    <div class="window-body" v-if="!minimized">
+      <div class="tab-bar" v-if="ws.previewFiles.length > 0">
+        <div
+          v-for="path in ws.previewFiles"
+          :key="path"
+          class="tab"
+          :class="{ active: path === ws.activePreviewFile }"
+          @click="ws.activePreviewFile = path"
+        >
+          <span>{{ getFileName(path) }}</span>
+          <button class="tab-close" @click.stop="ws.closePreviewFile(path)">×</button>
+        </div>
+      </div>
 
-    <div v-if="!activeFile" class="panel-empty">点击文件树查看</div>
-    <template v-else>
-      <div class="preview-toolbar">
-        <span class="preview-path">{{ activeFile }}</span>
-        <template v-if="activeState?.isEditing">
-          <button class="btn-save" @click="handleSave">保存</button>
-          <button class="btn-cancel" @click="cancelEdit">取消</button>
-          <span v-if="activeState?.saveError" class="save-error">{{ activeState.saveError }}</span>
-        </template>
-        <template v-else>
-          <button class="btn-edit" @click="enterEdit">编辑</button>
-          <button class="btn-diff" :class="{ active: isChanged }" @click="toggleDiff">
-            {{ activeState?.showDiff ? '隐藏差异' : '查看差异' }}
-          </button>
-        </template>
-      </div>
-      <div v-if="activeState?.loading" class="preview-loading">加载中...</div>
-      <div v-else-if="activeState?.isEditing" class="editor-wrap">
+      <div v-if="!activeFile" class="panel-empty">点击文件树查看</div>
+      <template v-else>
+        <div class="preview-toolbar">
+          <span class="preview-path">{{ activeFile }}</span>
+          <template v-if="activeState?.isEditing">
+            <button class="btn-save" @click="handleSave">保存</button>
+            <button class="btn-cancel" @click="cancelEdit">取消</button>
+            <span v-if="activeState?.saveError" class="save-error">{{ activeState.saveError }}</span>
+          </template>
+          <template v-else>
+            <button
+              v-if="isMarkdown"
+              class="btn-md"
+              :class="{ active: activeState?.showRendered }"
+              @click="toggleRendered"
+            >{{ activeState?.showRendered ? '看源码' : '看渲染' }}</button>
+            <button class="btn-edit" @click="enterEdit">编辑</button>
+            <button class="btn-diff" :class="{ active: isChanged }" @click="toggleDiff">
+              {{ activeState?.showDiff ? '隐藏差异' : '查看差异' }}
+            </button>
+          </template>
+        </div>
+        <div v-if="activeState?.loading" class="preview-loading">加载中...</div>
+        <div v-else-if="activeState?.isEditing" class="editor-wrap">
+          <CodeEditor
+            :model-value="activeState!.editContent"
+            :language="detectLang(activeFile)"
+            :read-only="false"
+            @update:model-value="val => activeState && (activeState.editContent = val)"
+            @save="handleSave"
+          />
+        </div>
+        <div v-else-if="activeState?.showDiff" class="diff-wrap">
+          <DiffView
+            :old-string="activeState!.oldContent"
+            :new-string="activeState!.newContent"
+            :language="detectLang(activeFile)"
+            :file-path="activeFile"
+          />
+        </div>
+        <!-- Rendered markdown. Source is escaped by the renderer (html: false). -->
+        <div
+          v-else-if="isMarkdown && activeState?.showRendered"
+          class="markdown-body"
+          @click="onRenderedClick"
+          v-html="renderedHtml"
+        ></div>
         <CodeEditor
-          :model-value="activeState!.editContent"
+          v-else
+          :model-value="activeState?.content || ''"
           :language="detectLang(activeFile)"
-          :read-only="false"
-          @update:model-value="val => activeState && (activeState.editContent = val)"
-          @save="handleSave"
+          :read-only="true"
         />
-      </div>
-      <div v-else-if="activeState?.showDiff" class="diff-wrap">
-        <DiffView
-          :old-string="activeState!.oldContent"
-          :new-string="activeState!.newContent"
-          :language="detectLang(activeFile)"
-          :file-path="activeFile"
-        />
-      </div>
-      <CodeEditor
-        v-else
-        :model-value="activeState?.content || ''"
-        :language="detectLang(activeFile)"
-        :read-only="true"
-      />
+      </template>
+    </div>
+
+    <template v-if="!geom.maximized && !minimized">
+      <div class="rz rz-n" @mousedown="startResize($event, 'n')"></div>
+      <div class="rz rz-s" @mousedown="startResize($event, 's')"></div>
+      <div class="rz rz-e" @mousedown="startResize($event, 'e')"></div>
+      <div class="rz rz-w" @mousedown="startResize($event, 'w')"></div>
+      <div class="rz rz-ne" @mousedown="startResize($event, 'ne')"></div>
+      <div class="rz rz-nw" @mousedown="startResize($event, 'nw')"></div>
+      <div class="rz rz-se" @mousedown="startResize($event, 'se')"></div>
+      <div class="rz rz-sw" @mousedown="startResize($event, 'sw')"></div>
     </template>
   </div>
 </template>
 
 <style scoped>
-.preview-panel {
-  width: 320px;
-  background: #0d1117;
-  border-left: 1px solid #30363d;
-  border-right: 1px solid #2a2a2e;
+.preview-window {
+  position: fixed;
+  /* Above panels/workspace bar, below modal overlays (90+) and the AI FAB (120). */
+  z-index: 80;
+  background: var(--surface-editor);
+  border: 1px solid #30363d;
+  border-radius: 8px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  flex-shrink: 0;
+  min-width: 360px;
 }
-.panel-header {
-  padding: 8px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  color: #888;
-  text-transform: uppercase;
-  border-bottom: 1px solid #2a2a2e;
-  height: 32px;
+.preview-window.maximized {
+  border-radius: 0;
+}
+.title-bar {
   display: flex;
   align-items: center;
+  gap: 8px;
+  padding: 0 6px 0 12px;
+  height: 32px;
   flex-shrink: 0;
+  background: #161b22;
+  border-bottom: 1px solid #30363d;
+  cursor: move;
+  user-select: none;
+}
+.title-text {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 600;
+  color: #8b949e;
+  letter-spacing: 0.5px;
+}
+.window-controls {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.win-btn {
+  background: none;
+  border: none;
+  color: #8b949e;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1;
+  width: 24px;
+  height: 22px;
+  border-radius: 4px;
+}
+.win-btn:hover { background: #30363d; color: #e6edf3; }
+.win-close:hover { background: #da3633; color: #fff; }
+.window-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-height: 0;
 }
 .tab-bar {
   display: flex;
@@ -291,6 +571,19 @@ watch(activeFile, (path) => {
 }
 .btn-diff:hover { color: #d2991d; border-color: #d2991d; }
 .btn-diff.active { color: #d2991d; }
+.btn-md {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #8b949e;
+  font-size: 10px;
+  padding: 1px 8px;
+  border-radius: 3px;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.btn-md:hover { color: #58a6ff; border-color: #58a6ff; }
+.btn-md.active { color: #58a6ff; }
 .save-error {
   font-size: 10px;
   color: #f85149;
@@ -306,4 +599,95 @@ watch(activeFile, (path) => {
   flex-direction: column;
 }
 .diff-wrap { flex: 1; overflow: auto; min-height: 0; }
+
+/* Rendered markdown. Injected via v-html, so children need :deep(). */
+.markdown-body {
+  flex: 1;
+  overflow: auto;
+  min-height: 0;
+  padding: 16px 20px 40px;
+  color: #c9d1d9;
+  font-size: 14px;
+  line-height: 1.65;
+  word-wrap: break-word;
+}
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4),
+.markdown-body :deep(h5),
+.markdown-body :deep(h6) {
+  margin: 22px 0 12px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #e6edf3;
+}
+.markdown-body :deep(h1) { font-size: 1.7em; padding-bottom: 6px; border-bottom: 1px solid #30363d; }
+.markdown-body :deep(h2) { font-size: 1.35em; padding-bottom: 5px; border-bottom: 1px solid #30363d; }
+.markdown-body :deep(h3) { font-size: 1.15em; }
+.markdown-body :deep(h4) { font-size: 1em; }
+.markdown-body :deep(h5), .markdown-body :deep(h6) { font-size: 0.9em; color: #8b949e; }
+.markdown-body :deep(> *:first-child) { margin-top: 0; }
+.markdown-body :deep(p), .markdown-body :deep(ul), .markdown-body :deep(ol) { margin: 0 0 12px; }
+.markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 26px; }
+.markdown-body :deep(li) { margin: 3px 0; }
+.markdown-body :deep(li > ul), .markdown-body :deep(li > ol) { margin: 3px 0; }
+.markdown-body :deep(a) { color: #58a6ff; text-decoration: none; cursor: pointer; }
+.markdown-body :deep(a:hover) { text-decoration: underline; }
+.markdown-body :deep(code) {
+  background: rgba(110, 118, 129, 0.4);
+  padding: 0.2em 0.4em;
+  border-radius: 4px;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 0.88em;
+}
+.markdown-body :deep(pre) {
+  background: #161b22;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  padding: 12px;
+  overflow: auto;
+  margin: 0 0 14px;
+}
+.markdown-body :deep(pre code) {
+  background: none;
+  padding: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.markdown-body :deep(blockquote) {
+  margin: 0 0 14px;
+  padding: 0 0 0 14px;
+  border-left: 3px solid #30363d;
+  color: #8b949e;
+}
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid #30363d;
+  margin: 20px 0;
+}
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  margin: 0 0 14px;
+  display: block;
+  overflow: auto;
+  max-width: 100%;
+}
+.markdown-body :deep(th), .markdown-body :deep(td) {
+  border: 1px solid #30363d;
+  padding: 6px 12px;
+}
+.markdown-body :deep(th) { background: #161b22; font-weight: 600; color: #e6edf3; }
+.markdown-body :deep(img) { max-width: 100%; }
+
+/* Resize handles */
+.rz { position: absolute; z-index: 2; }
+.rz-n { top: 0; left: 6px; right: 6px; height: 5px; cursor: ns-resize; }
+.rz-s { bottom: 0; left: 6px; right: 6px; height: 5px; cursor: ns-resize; }
+.rz-e { right: 0; top: 6px; bottom: 6px; width: 5px; cursor: ew-resize; }
+.rz-w { left: 0; top: 6px; bottom: 6px; width: 5px; cursor: ew-resize; }
+.rz-ne { top: 0; right: 0; width: 10px; height: 10px; cursor: ne-resize; }
+.rz-nw { top: 0; left: 0; width: 10px; height: 10px; cursor: nw-resize; }
+.rz-se { bottom: 0; right: 0; width: 12px; height: 12px; cursor: se-resize; }
+.rz-sw { bottom: 0; left: 0; width: 10px; height: 10px; cursor: sw-resize; }
 </style>

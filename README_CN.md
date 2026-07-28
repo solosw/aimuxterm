@@ -1,4 +1,4 @@
-# Just Warp Go
+# aimuxterm
 
 受 [Warp](https://www.warp.dev/) 启发的桌面终端管理应用。基于 **Wails v2 + Go + Vue 3 + TypeScript** 构建。
 
@@ -73,8 +73,8 @@ Wails 桌面应用
 
 ```bash
 # 克隆
-git clone https://github.com/solosw/just-warp-go.git
-cd just-warp-go
+git clone https://github.com/solosw/aimuxterm.git
+cd aimuxterm
 
 # 安装前端依赖
 cd frontend && npm install && cd ..

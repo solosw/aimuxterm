@@ -1,4 +1,4 @@
-module just-warp-go
+module aimuxterm
 
 go 1.25.0
 

@@ -1,4 +1,4 @@
-# Just Warp Go
+# aimuxterm
 
 A [Warp](https://www.warp.dev/)-inspired desktop terminal management app built with **Wails v2 + Go + Vue 3 + TypeScript**.
 
@@ -73,8 +73,8 @@ Wails Desktop App
 
 ```bash
 # Clone
-git clone https://github.com/solosw/just-warp-go.git
-cd just-warp-go
+git clone https://github.com/solosw/aimuxterm.git
+cd aimuxterm
 
 # Install frontend dependencies
 cd frontend && npm install && cd ..

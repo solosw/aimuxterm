@@ -19,17 +19,42 @@ type Store struct {
 	dir string
 }
 
+// legacyConfigDirName is the pre-rename config directory. Settings saved under
+// it are migrated once, on first launch after the rename.
+const legacyConfigDirName = "just-warp-go"
+
+// configDirName is the current config directory name.
+const configDirName = "aimuxterm"
+
 // NewStore creates a config store in the user's config directory.
 func NewStore() (*Store, error) {
-	dir, err := os.UserConfigDir()
+	base, err := os.UserConfigDir()
 	if err != nil {
 		return nil, err
 	}
-	dir = filepath.Join(dir, "just-warp-go")
+	dir := filepath.Join(base, configDirName)
+	migrateLegacyDir(filepath.Join(base, legacyConfigDirName), dir)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, err
 	}
 	return &Store{dir: dir}, nil
+}
+
+// migrateLegacyDir moves settings from the old config directory to the new one.
+// It only runs when the old directory exists and the new one does not, so it
+// never overwrites current settings. Failures are non-fatal: the app then just
+// starts with defaults.
+func migrateLegacyDir(legacy, current string) {
+	if legacy == current {
+		return
+	}
+	if _, err := os.Stat(current); err == nil {
+		return // already migrated, or fresh config already written
+	}
+	if info, err := os.Stat(legacy); err != nil || !info.IsDir() {
+		return // nothing to migrate
+	}
+	_ = os.Rename(legacy, current)
 }
 
 // LoadWorkspaces reads the workspace history.
@@ -317,6 +342,70 @@ func (s *Store) RemoveRemoteWorkspace(name string) error {
 		return err
 	}
 	return os.WriteFile(filepath.Join(s.dir, "remote-workspaces.json"), data, 0644)
+}
+
+// ─── Workspace ──────────────────────────────────────
+
+// ─── Appearance ─────────────────────────────────────
+// Appearance holds background-image and transparency preferences.
+// BackgroundImage is an absolute path on the local machine; opacity values are
+// clamped to 0..1 by Normalize.
+type Appearance struct {
+	BackgroundImage   string  `json:"backgroundImage"`
+	BackgroundOpacity float64 `json:"backgroundOpacity"`
+	PanelOpacity      float64 `json:"panelOpacity"`
+}
+
+// DefaultAppearance returns the built-in appearance: no image, panels opaque.
+func DefaultAppearance() Appearance {
+	return Appearance{
+		BackgroundImage:   "",
+		BackgroundOpacity: 0.35,
+		PanelOpacity:      0.85,
+	}
+}
+
+// Normalize clamps opacity values into a usable range. PanelOpacity has a floor
+// so the UI can never be made completely invisible.
+func (a *Appearance) Normalize() {
+	a.BackgroundOpacity = clamp01(a.BackgroundOpacity, 0)
+	a.PanelOpacity = clamp01(a.PanelOpacity, 0.15)
+}
+
+func clamp01(v, min float64) float64 {
+	if v < min {
+		return min
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+func (s *Store) LoadAppearance() (Appearance, error) {
+	path := filepath.Join(s.dir, "appearance.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return DefaultAppearance(), nil
+		}
+		return DefaultAppearance(), err
+	}
+	ap := DefaultAppearance()
+	if err := json.Unmarshal(data, &ap); err != nil {
+		return DefaultAppearance(), err
+	}
+	ap.Normalize()
+	return ap, nil
+}
+
+func (s *Store) SaveAppearance(ap Appearance) error {
+	ap.Normalize()
+	data, err := json.MarshalIndent(ap, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(s.dir, "appearance.json"), data, 0644)
 }
 
 // ─── Workspace ──────────────────────────────────────

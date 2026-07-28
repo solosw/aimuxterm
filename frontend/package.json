@@ -28,12 +28,14 @@
     "@xterm/xterm": "^6.0.0",
     "codemirror": "^6.0.2",
     "highlight.js": "^11.11.1",
+    "markdown-it": "14.3.0",
     "pinia": "^3.0.4",
     "vue": "^3.2.37"
   },
   "devDependencies": {
     "@babel/types": "^7.18.10",
     "@types/diff-match-patch": "^1.0.36",
+    "@types/markdown-it": "14.1.2",
     "@vitejs/plugin-vue": "^3.0.3",
     "typescript": "^4.6.4",
     "vite": "^3.0.7",

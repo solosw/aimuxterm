@@ -3,6 +3,11 @@ import { ref, onMounted, onUnmounted } from 'vue'
 import { useWorkspaceStore } from '../stores/workspace'
 import RemoteWorkspaceDialog from './RemoteWorkspaceDialog.vue'
 
+const emit = defineEmits<{
+  (e: 'open-appearance'): void
+  (e: 'open-ai-settings'): void
+}>()
+
 const ws = useWorkspaceStore()
 const showDropdown = ref(false)
 const showRemoteDialog = ref(false)
@@ -99,6 +104,14 @@ async function removeHistory(path: string, e: Event) {
       <button v-if="ws.info?.isRemote" class="btn-refresh" @click="ws.refreshRemote()" title="刷新远程工作区">&#x21BB;</button>
       <span class="file-count">{{ ws.info?.fileCount }} 个文件</span>
     </div>
+
+    <div class="bar-spacer"></div>
+
+    <div class="bar-actions">
+      <button class="btn-bar" @click="emit('open-appearance')" title="外观设置">外观</button>
+      <button class="btn-bar btn-bar-primary" @click="emit('open-ai-settings')" title="AI 配置">AI 配置</button>
+    </div>
+
     <RemoteWorkspaceDialog v-if="showRemoteDialog" @close="showRemoteDialog = false" />
   </div>
 </template>
@@ -109,11 +122,15 @@ async function removeHistory(path: string, e: Event) {
   align-items: center;
   gap: 12px;
   padding: 6px 12px;
-  background: #1a1a1c;
+  background: var(--surface-bar);
   border-bottom: 1px solid #333;
   height: 36px;
   position: relative;
+  /* Must sit above .main-area (z-index 1). The dropdown is position:absolute
+     inside this bar; if the bar's stacking context is ≤ main-area, the whole
+     menu (including workspace picker clicks) is covered and unusable. */
   z-index: 50;
+  flex-shrink: 0;
 }
 .dropdown-wrapper {
   position: relative;
@@ -245,4 +262,33 @@ async function removeHistory(path: string, e: Event) {
   line-height: 20px;
 }
 .btn-refresh:hover { background: #1a3a5c; }
+/* Pushes the action buttons to the right edge regardless of whether the
+   workspace-info block is present. */
+.bar-spacer {
+  flex: 1;
+}
+.bar-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.btn-bar {
+  background: #21262d;
+  border: 1px solid #30363d;
+  color: #c9d1d9;
+  padding: 4px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.btn-bar:hover { background: #30363d; }
+.btn-bar-primary {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #fff;
+  font-weight: 600;
+}
+.btn-bar-primary:hover { background: #1d4ed8; }
 </style>

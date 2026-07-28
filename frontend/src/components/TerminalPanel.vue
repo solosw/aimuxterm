@@ -96,7 +96,7 @@ const gridCols = computed(() => {
 .tab-bar {
   display: flex;
   align-items: center;
-  background: #1a1a1c;
+  background: var(--surface-bar);
   border-bottom: 1px solid #333;
   height: 32px;
   padding: 0 4px;
@@ -171,7 +171,9 @@ const gridCols = computed(() => {
   flex: 1;
   display: flex;
   overflow: hidden;
-  background: #161618;
+  /* Transparent so xterm canvas opacity can show the app background.
+     The dimmed fill lives on the canvas via TerminalView's allowTransparency. */
+  background: transparent;
 }
 .no-tabs {
   flex: 1;
@@ -193,14 +195,15 @@ const gridCols = computed(() => {
   flex: 1;
   display: grid;
   gap: 2px;
-  background: #111;
+  /* Transparent so multi-pane terminals can still show the app background. */
+  background: transparent;
   overflow: hidden;
 }
 .grid-cell {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #161618;
+  background: transparent;
   border: 1px solid #2a2a2e;
 }
 .grid-cell-header {

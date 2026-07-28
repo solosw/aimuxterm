@@ -20,7 +20,7 @@ func main() {
 	app.startupWorkspace = *workspaceFlag
 
 	err := wails.Run(&options.App{
-		Title:     "Warp Go - 智能终端",
+		Title:     "aimuxterm - 智能终端",
 		Width:     1400,
 		Height:    900,
 		MinWidth:  900,

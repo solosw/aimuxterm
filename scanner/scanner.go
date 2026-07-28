@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"just-warp-go/snapshot"
+	"aimuxterm/snapshot"
 )
 
 // skipDirs are directories always skipped during scanning.
@@ -18,13 +18,23 @@ var skipDirs = map[string]bool{
 
 // ScanResult holds the result of a workspace scan.
 type ScanResult struct {
-	Files []string `json:"files"` // relative paths of text files
+	Files []string `json:"files"` // relative paths of text files (snapshot-tracked)
+	// OtherFiles are files present in the workspace but not snapshot-tracked:
+	// binary files and files larger than maxTextSize. They are listed for
+	// display purposes only and their content is never loaded.
+	OtherFiles []string `json:"otherFiles"`
 }
 
-// Scan recursively scans a workspace directory, respecting .gitignore and skipping binary files.
+// maxTextSize is the size limit above which a file is not snapshot-tracked.
+const maxTextSize = 5 * 1024 * 1024
+
+// Scan recursively scans a workspace directory, respecting .gitignore.
+// Text files within the size limit go to Files; binary or oversized files go to
+// OtherFiles so the UI can list every file without reading unreadable content.
 func Scan(workspace string) (*ScanResult, error) {
 	ignore := loadGitignore(workspace)
 	var files []string
+	var others []string
 
 	err := filepath.Walk(workspace, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -43,17 +53,15 @@ func Scan(workspace string) (*ScanResult, error) {
 		if ignore.Match(relPath) {
 			return nil
 		}
-		if isBinaryPath(path) {
-			return nil
-		}
-		if info.Size() > 5*1024*1024 {
+		if isBinaryPath(path) || info.Size() > maxTextSize {
+			others = append(others, relPath)
 			return nil
 		}
 		files = append(files, relPath)
 		return nil
 	})
 
-	return &ScanResult{Files: files}, err
+	return &ScanResult{Files: files, OtherFiles: others}, err
 }
 
 // gitignore is a simple .gitignore rule matcher.
