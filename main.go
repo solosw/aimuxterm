@@ -11,6 +11,7 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+// 快速排序
 
 func main() {
 	workspaceFlag := flag.String("workspace", "", "Workspace path to open on startup")

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, watch, reactive } from 'vue'
+import { DeleteWorkspaceFile, UploadWorkspaceFiles } from '../../wailsjs/go/main/App'
 import { useWorkspaceStore } from '../stores/workspace'
 import { getFileIcon } from '../utils/fileIcon'
 
@@ -31,6 +32,8 @@ interface FlatNode {
 
 const tree = ref<TreeNode[]>([])
 const expanded = ref<Set<string>>(new Set())
+const actionError = ref('')
+const contextMenu = ref<{ x: number; y: number; node: TreeNode } | null>(null)
 
 function sortChildren(nodes: TreeNode[]) {
   nodes.sort((a, b) => {
@@ -113,6 +116,54 @@ watch(() => ws.info, async (newInfo) => {
 }, { immediate: true })
 
 // ── Click handler ──
+async function refreshTree() {
+  actionError.value = ''
+  if (ws.info?.isRemote) {
+    await initRemoteTree()
+  } else {
+    await ws.refreshLocal()
+  }
+}
+
+function getTargetDirectory(node?: TreeNode): string {
+  if (!node || node.name === '..') return ''
+  return node.isDir ? node.path : node.path.split('/').slice(0, -1).join('/')
+}
+
+function openContextMenu(event: MouseEvent, node: TreeNode) {
+  event.preventDefault()
+  contextMenu.value = { x: event.clientX, y: event.clientY, node }
+}
+
+function closeContextMenu() {
+  contextMenu.value = null
+}
+
+async function uploadFiles(node?: TreeNode) {
+  closeContextMenu()
+  actionError.value = ''
+  try {
+    await UploadWorkspaceFiles(getTargetDirectory(node))
+    await refreshTree()
+  } catch (error: any) {
+    actionError.value = error?.message || String(error)
+  }
+}
+
+async function deleteFile(node: TreeNode) {
+  closeContextMenu()
+  if (node.isDir || node.name === '..') return
+  if (!window.confirm(`确定删除“${node.name}”？该操作可通过文件变更列表还原。`)) return
+  actionError.value = ''
+  try {
+    await DeleteWorkspaceFile(node.path)
+    ws.closePreviewFile(node.path)
+    await refreshTree()
+  } catch (error: any) {
+    actionError.value = error?.message || String(error)
+  }
+}
+
 function handleClick(node: TreeNode) {
   if (node.isDir) {
     if (expanded.value.has(node.path)) {
@@ -161,9 +212,14 @@ function renderTree(nodes: TreeNode[], depth: number = 0): FlatNode[] {
 </script>
 
 <template>
-  <div class="file-tree-panel">
-    <div class="panel-header">文件目录</div>
+  <div class="file-tree-panel" @click="closeContextMenu">
+    <div class="panel-header">
+      <span>文件目录</span>
+      <button class="tree-action" title="上传文件到工作区" @click.stop="uploadFiles()">上传</button>
+      <button class="tree-action" title="刷新文件目录" @click.stop="refreshTree">↻</button>
+    </div>
     <div class="tree-body">
+      <div v-if="actionError" class="tree-error">{{ actionError }}</div>
       <div v-if="!ws.hasWorkspace" class="tree-empty">未选择工作区</div>
       <div v-else-if="tree.length === 0" class="tree-empty">加载中...</div>
       <div
@@ -174,13 +230,23 @@ function renderTree(nodes: TreeNode[], depth: number = 0): FlatNode[] {
         :style="{ paddingLeft: item.padding + 'px' }"
         :draggable="!item.node.isDir"
         :title="item.node.isBinary ? item.node.name + ' — 二进制文件，不加载内容' : item.node.name"
-        @click="handleClick(item.node)"
+        @click.stop="handleClick(item.node)"
+        @contextmenu="openContextMenu($event, item.node)"
         @dragstart="onDragStart($event, item.node)"
       >
         <span class="node-icon">{{ getIcon(item.node) }}</span>
         <span class="node-name">{{ item.node.name }}</span>
         <span v-if="item.node.loading" class="node-loading">...</span>
       </div>
+    </div>
+    <div
+      v-if="contextMenu"
+      class="tree-context-menu"
+      :style="{ left: contextMenu.x + 'px', top: contextMenu.y + 'px' }"
+      @click.stop
+    >
+      <button @click="uploadFiles(contextMenu!.node)">上传到此处</button>
+      <button v-if="!contextMenu.node.isDir && contextMenu.node.name !== '..'" class="danger" @click="deleteFile(contextMenu.node)">删除文件</button>
     </div>
   </div>
 </template>
@@ -206,7 +272,16 @@ function renderTree(nodes: TreeNode[], depth: number = 0): FlatNode[] {
   height: 32px;
   display: flex;
   align-items: center;
+  gap: 4px;
 }
+.panel-header > span { margin-right: auto; }
+.tree-action { border: 1px solid #3a3a3e; border-radius: 3px; background: #21262d; color: #8b949e; padding: 1px 5px; font-size: 10px; cursor: pointer; text-transform: none; }
+.tree-action:hover { border-color: #58a6ff; color: #58a6ff; }
+.tree-error { margin: 6px 8px; color: #f85149; font-size: 11px; line-height: 1.35; word-break: break-word; }
+.tree-context-menu { position: fixed; z-index: 100; min-width: 132px; padding: 4px; border: 1px solid #3a3a3e; border-radius: 4px; background: #1e1e20; box-shadow: 0 8px 24px rgba(0, 0, 0, .45); }
+.tree-context-menu button { display: block; width: 100%; border: 0; border-radius: 3px; background: transparent; color: #c9d1d9; padding: 5px 8px; text-align: left; font-size: 11px; cursor: pointer; }
+.tree-context-menu button:hover { background: #30363d; }
+.tree-context-menu button.danger { color: #f85149; }
 .tree-body {
   flex: 1;
   overflow-y: auto;

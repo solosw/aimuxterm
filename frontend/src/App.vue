@@ -15,6 +15,7 @@ import StartupCommandSettings from './components/StartupCommandSettings.vue'
 import AIConfigSettings from './components/AIConfigSettings.vue'
 import AppearanceSettings from './components/AppearanceSettings.vue'
 import { useAppearanceStore } from './stores/appearance'
+import { useAICompletionStore } from './stores/aiCompletion'
 
 const ws = useWorkspaceStore()
 const term = useTerminalStore()
@@ -23,6 +24,7 @@ const showAISettings = ref(false)
 const showAppearance = ref(false)
 const fc = useFileChangesStore()
 const appearance = useAppearanceStore()
+const aiCompletion = useAICompletionStore()
 
 function escapeCdPath(p: string) {
   return p.replace(/"/g, '\\"')
@@ -88,6 +90,7 @@ function onOpenAppearance() {
 
 onMounted(async () => {
   appearance.load()
+  aiCompletion.load()
   ws.loadHistory()
   fc.initListener()
   const startupWs = await GetStartupWorkspace()

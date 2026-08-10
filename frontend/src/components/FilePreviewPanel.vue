@@ -23,6 +23,7 @@ const cache = ref<Record<string, {
   newContent: string
   isEditing: boolean
   editContent: string
+  isDirty: boolean
   saveError: string
   /** Markdown files only: show the rendered document instead of the source. */
   showRendered: boolean
@@ -46,8 +47,8 @@ function getOrCreate(path: string) {
   if (!cache.value[path]) {
     cache.value[path] = {
       content: '', highlightedHtml: '', loading: false, showDiff: false,
-      oldContent: '', newContent: '', isEditing: false, editContent: '', saveError: '',
-      showRendered: isMarkdownPath(path),
+      oldContent: '', newContent: '', isEditing: true, editContent: '', isDirty: false, saveError: '',
+      showRendered: false,
     }
   }
   return cache.value[path]
@@ -74,11 +75,13 @@ async function loadFile(path: string) {
   const st = getOrCreate(path)
   st.loading = true
   st.showDiff = false
-  st.isEditing = false
+  st.isEditing = true
+  st.isDirty = false
   st.saveError = ''
   try {
     const raw = await GetFileContent(path) || ''
     st.content = raw
+    st.editContent = raw
     st.highlightedHtml = highlight(raw, path)
   } catch {
     st.highlightedHtml = '<span style="color:#f85149">[无法读取文件]</span>'
@@ -150,11 +153,19 @@ function enterEdit() {
   st.saveError = ''
 }
 
+function updateEditContent(value: string) {
+  const st = activeState.value
+  if (!st) return
+  st.editContent = value
+  st.isDirty = value !== st.content
+  st.saveError = ''
+}
+
 function cancelEdit() {
   const st = activeState.value
   if (!st) return
-  st.isEditing = false
-  st.editContent = ''
+  st.editContent = st.content
+  st.isDirty = false
   st.saveError = ''
 }
 
@@ -167,8 +178,10 @@ async function handleSave() {
     await SaveFile(path, st.editContent)
     st.content = st.editContent
     st.highlightedHtml = highlight(st.editContent, path)
-    st.isEditing = false
-    st.editContent = ''
+    st.isDirty = false
+    st.isEditing = true
+    st.saveError = ''
+    await fc.refresh()
   } catch (e: any) {
     st.saveError = '保存失败: ' + (e?.message || e)
   }
@@ -361,8 +374,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
         <div class="preview-toolbar">
           <span class="preview-path">{{ activeFile }}</span>
           <template v-if="activeState?.isEditing">
-            <button class="btn-save" @click="handleSave">保存</button>
-            <button class="btn-cancel" @click="cancelEdit">取消</button>
+            <span v-if="activeState?.isDirty" class="unsaved-indicator" title="有未保存的更改">●</span>
+            <button class="btn-save" :disabled="!activeState?.isDirty" @click="handleSave">保存</button>
+            <button class="btn-cancel" :disabled="!activeState?.isDirty" @click="cancelEdit">还原</button>
             <span v-if="activeState?.saveError" class="save-error">{{ activeState.saveError }}</span>
           </template>
           <template v-else>
@@ -383,8 +397,8 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
           <CodeEditor
             :model-value="activeState!.editContent"
             :language="detectLang(activeFile)"
-            :read-only="false"
-            @update:model-value="val => activeState && (activeState.editContent = val)"
+            :path="activeFile"
+            @update:model-value="updateEditContent"
             @save="handleSave"
           />
         </div>
@@ -407,6 +421,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
           v-else
           :model-value="activeState?.content || ''"
           :language="detectLang(activeFile)"
+          :path="activeFile"
           :read-only="true"
         />
       </template>
@@ -557,7 +572,9 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
   flex-shrink: 0;
 }
 .btn-edit:hover, .btn-save:hover { color: #58a6ff; border-color: #58a6ff; }
-.btn-cancel:hover { color: #f85149; border-color: #f85149; }
+.btn-save:disabled, .btn-cancel:disabled { opacity: .45; cursor: default; }
+.btn-cancel:hover:not(:disabled) { color: #f85149; border-color: #f85149; }
+.unsaved-indicator { color: #d29922; font-size: 12px; line-height: 1; }
 .btn-diff {
   background: #21262d;
   border: 1px solid #30363d;

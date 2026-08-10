@@ -26,6 +26,10 @@ export function CreateTerminal() {
   return window['go']['main']['App']['CreateTerminal']();
 }
 
+export function DeleteWorkspaceFile(arg1) {
+  return window['go']['main']['App']['DeleteWorkspaceFile'](arg1);
+}
+
 export function DetectAIToolConfigPaths() {
   return window['go']['main']['App']['DetectAIToolConfigPaths']();
 }
@@ -168,6 +172,10 @@ export function SelectBackgroundImage() {
 
 export function SelectWorkspace() {
   return window['go']['main']['App']['SelectWorkspace']();
+}
+
+export function UploadWorkspaceFiles(arg1) {
+  return window['go']['main']['App']['UploadWorkspaceFiles'](arg1);
 }
 
 export function WriteToTerminal(arg1, arg2) {

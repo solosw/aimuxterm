@@ -3,7 +3,7 @@ const langMap: Record<string, string> = {
   ts: 'typescript', tsx: 'typescript', mts: 'typescript', cts: 'typescript',
   js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript',
   // Web
-  html: 'xml', htm: 'xml', vue: 'xml', svelte: 'xml',
+  html: 'xml', htm: 'xml', vue: 'vue', svelte: 'xml',
   css: 'css', scss: 'scss', sass: 'scss', less: 'less',
   // Data
   json: 'json', jsonc: 'json', json5: 'json',

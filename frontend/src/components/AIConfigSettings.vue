@@ -2,8 +2,10 @@
 import { ref, computed, onMounted } from 'vue'
 import { ApplyAIConfigGroup, DetectAIToolConfigPaths, GetAIConfigGroups, SaveAIConfigGroups } from '../../wailsjs/go/main/App'
 import { config, main } from '../../wailsjs/go/models'
+import { useAICompletionStore } from '../stores/aiCompletion'
 
 const emit = defineEmits(['close'])
+const aiCompletion = useAICompletionStore()
 const groups = ref<any[]>([])
 const selected = ref(0)
 const paths = ref<any | null>(null)
@@ -21,6 +23,7 @@ function makeEmptyGroup() {
 }
 
 onMounted(async () => {
+  aiCompletion.load()
   groups.value = (await GetAIConfigGroups()) || []
   if (groups.value.length === 0) groups.value = [makeEmptyGroup()]
   paths.value = await DetectAIToolConfigPaths()
@@ -28,6 +31,7 @@ onMounted(async () => {
 
 async function save() {
   await SaveAIConfigGroups(groups.value as any)
+  aiCompletion.save()
   status.value = '已保存'
 }
 
@@ -119,6 +123,29 @@ async function apply(target: string) {
             </select>
           </div>
 
+          <div class="section-title">编辑器 AI 自动补全</div>
+          <div class="completion-note">使用 OpenAI 兼容的 FIM 补全接口（/v1/completions）。可按 Ctrl/Cmd + B 手动触发；开启自动触发后，停止输入约 700ms 会请求补全。</div>
+          <div class="form-row">
+            <label>启用补全</label>
+            <input v-model="aiCompletion.config.enabled" type="checkbox" />
+          </div>
+          <div class="form-row">
+            <label>自动触发</label>
+            <input v-model="aiCompletion.config.autoTrigger" type="checkbox" :disabled="!aiCompletion.config.enabled" />
+          </div>
+          <div class="form-row">
+            <label>API Key</label>
+            <input v-model="aiCompletion.config.apiKey" type="password" autocomplete="off" :disabled="!aiCompletion.config.enabled" placeholder="Bearer Token" />
+          </div>
+          <div class="form-row">
+            <label>Base URL</label>
+            <input v-model="aiCompletion.config.baseUrl" :disabled="!aiCompletion.config.enabled" placeholder="https://api.example.com" />
+          </div>
+          <div class="form-row">
+            <label>补全模型</label>
+            <input v-model="aiCompletion.config.model" :disabled="!aiCompletion.config.enabled" placeholder="模型 ID" />
+          </div>
+
           <div class="section-title">探测到的配置路径</div>
           <div class="path-item">Claude Code: {{ paths?.claudeCode || '未找到' }}</div>
           <div class="path-item">Codex: {{ paths?.codex || '未找到' }}</div>
@@ -152,6 +179,7 @@ async function apply(target: string) {
 .form-row label { width: 90px; font-size: 12px; color: #888; flex-shrink: 0; }
 .form-row input, .form-row select { flex: 1; background: #111; border: 1px solid #3a3a3e; color: #ddd; padding: 6px 8px; border-radius: 4px; font-size: 12px; }
 .section-title { margin-top: 8px; color: #8fb; font-size: 12px; font-weight: 600; }
+.completion-note { color: #8b949e; font-size: 11px; line-height: 1.45; }
 .cmd-row { display: flex; align-items: center; gap: 8px; }
 .input-sm { background: #111; border: 1px solid #3a3a3e; color: #ddd; padding: 6px 8px; border-radius: 4px; font-size: 12px; }
 .input-sm.flex-1 { flex: 1; }

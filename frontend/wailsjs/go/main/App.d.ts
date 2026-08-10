@@ -16,6 +16,8 @@ export function CreateSSHTerminal(arg1:main.SSHConfig):Promise<string>;
 
 export function CreateTerminal():Promise<string>;
 
+export function DeleteWorkspaceFile(arg1:string):Promise<void>;
+
 export function DetectAIToolConfigPaths():Promise<main.AIToolPaths>;
 
 export function GetAIConfigGroups():Promise<Array<config.AIConfigGroup>>;
@@ -87,5 +89,7 @@ export function SaveTerminalSnapshots(arg1:Array<config.TerminalSnapshot>):Promi
 export function SelectBackgroundImage():Promise<string>;
 
 export function SelectWorkspace():Promise<main.WorkspaceInfo>;
+
+export function UploadWorkspaceFiles(arg1:string):Promise<void>;
 
 export function WriteToTerminal(arg1:string,arg2:string):Promise<void>;

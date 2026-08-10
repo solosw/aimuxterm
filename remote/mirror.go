@@ -22,6 +22,7 @@ type MirrorConfig struct {
 	CachePath  string
 }
 
+
 // SyncWorkspace mirrors a remote SSH directory into a local cache directory.
 func SyncWorkspace(cfg MirrorConfig) error {
 	if cfg.Port == 0 {

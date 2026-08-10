@@ -25,6 +25,7 @@ import (
 	"aimuxterm/watcher"
 )
 
+
 // remoteFileEntry holds file metadata for remote workspaces.
 // Used for lightweight change detection without downloading file content.
 type remoteFileEntry struct {
@@ -137,7 +138,7 @@ type App struct {
 	remoteClient     *ssh.Client
 	remoteSFTP       *sftp.Client
 	remotePath       string
-	remoteSSHCfg     terminal.SSHConfig  // saved for auto-creating SSH terminals
+	remoteSSHCfg     terminal.SSHConfig // saved for auto-creating SSH terminals
 	remotePollCancel context.CancelFunc
 	remoteGitignore  *scanner.Gitignore
 
@@ -536,9 +537,9 @@ func (a *App) OpenRemoteWorkspace(cfg SSHConfig, remotePath string) (*WorkspaceI
 
 	info := a.makeWorkspaceInfo()
 	a.emitChanges()
-		pollCtx, cancel := context.WithCancel(a.ctx)
-		a.remotePollCancel = cancel
-		go a.remotePollLoop(pollCtx)
+	pollCtx, cancel := context.WithCancel(a.ctx)
+	a.remotePollCancel = cancel
+	go a.remotePollLoop(pollCtx)
 
 	return info, nil
 }
@@ -1260,10 +1261,112 @@ func (a *App) SaveFile(relPath, content string) error {
 	if err := os.WriteFile(fullPath, []byte(content), 0644); err != nil {
 		return fmt.Errorf("保存文件失败: %w", err)
 	}
-	if err := a.snapEng.AcceptFile(relPath); err != nil {
-		return fmt.Errorf("更新快照失败: %w", err)
+	a.refreshScanLocked()
+	a.emitChanges()
+	return nil
+}
+
+func (a *App) DeleteWorkspaceFile(relPath string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	relPath = filepath.ToSlash(filepath.Clean(relPath))
+	if relPath == "." || strings.HasPrefix(relPath, "../") || filepath.IsAbs(relPath) {
+		return fmt.Errorf("无效的文件路径")
+	}
+	if a.isRemote {
+		if a.remoteSFTP == nil {
+			return fmt.Errorf("远程连接不可用")
+		}
+		if err := a.remoteSFTP.Remove(path.Join(a.remotePath, relPath)); err != nil {
+			return fmt.Errorf("删除远程文件失败: %w", err)
+		}
+		entries, err := a.listRemoteFiles(a.remoteSFTP, a.remotePath)
+		if err != nil {
+			return err
+		}
+		a.scannedRemoteEntries = entries
+		a.scannedFiles = entriesToPaths(entries)
+		a.emitChanges()
+		return nil
+	}
+	if err := os.Remove(filepath.Join(a.workspace, relPath)); err != nil {
+		return fmt.Errorf("删除文件失败: %w", err)
 	}
 	a.refreshScanLocked()
+	a.emitChanges()
+	return nil
+}
+
+func (a *App) UploadWorkspaceFiles(targetDir string) error {
+	picked, err := runtime.OpenMultipleFilesDialog(a.ctx, runtime.OpenDialogOptions{Title: "上传文件到工作区"})
+	if err != nil {
+		return fmt.Errorf("选择上传文件失败: %w", err)
+	}
+	if len(picked) == 0 {
+		return nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	targetDir = filepath.ToSlash(filepath.Clean(targetDir))
+	if targetDir == "." {
+		targetDir = ""
+	}
+	if strings.HasPrefix(targetDir, "../") || filepath.IsAbs(targetDir) {
+		return fmt.Errorf("无效的目标目录")
+	}
+	for _, source := range picked {
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return fmt.Errorf("读取上传文件失败: %w", err)
+		}
+		name := filepath.Base(source)
+		if a.isRemote {
+			if a.remoteSFTP == nil {
+				return fmt.Errorf("远程连接不可用")
+			}
+			destination := path.Join(a.remotePath, filepath.ToSlash(targetDir), name)
+			if err := a.remoteSFTP.MkdirAll(path.Dir(destination)); err != nil {
+				return fmt.Errorf("创建远程目录失败: %w", err)
+			}
+			file, err := a.remoteSFTP.Create(destination)
+			if err != nil {
+				return fmt.Errorf("创建远程文件失败: %w", err)
+			}
+			_, writeErr := file.Write(data)
+			closeErr := file.Close()
+			if writeErr != nil {
+				return fmt.Errorf("上传远程文件失败: %w", writeErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("关闭远程文件失败: %w", closeErr)
+			}
+			continue
+		}
+		destination := filepath.Join(a.workspace, targetDir, name)
+		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+			return fmt.Errorf("创建目录失败: %w", err)
+		}
+		if err := os.WriteFile(destination, data, 0644); err != nil {
+			return fmt.Errorf("上传文件失败: %w", err)
+		}
+	}
+	if a.isRemote {
+		entries, err := a.listRemoteFiles(a.remoteSFTP, a.remotePath)
+		if err != nil {
+			return err
+		}
+		a.scannedRemoteEntries = entries
+		a.scannedFiles = entriesToPaths(entries)
+	} else {
+		a.refreshScanLocked()
+	}
 	a.emitChanges()
 	return nil
 }
@@ -1289,7 +1392,6 @@ func (a *App) CreateTerminal() (string, error) {
 	}
 	return id, nil
 }
-
 
 func (a *App) GetTerminalSnapshots() ([]config.TerminalSnapshot, error) {
 	if a.cfgStore == nil {
@@ -1427,7 +1529,6 @@ func (a *App) RemoveSSHConfig(name string) error {
 	}
 	return a.cfgStore.RemoveSSHConfig(name)
 }
-
 
 // ─── AI Configs ──────────────────────────────────────
 
@@ -1824,4 +1925,3 @@ func (a *App) emitChanges() {
 	}
 	runtime.EventsEmit(a.ctx, "file-changes", changes)
 }
-

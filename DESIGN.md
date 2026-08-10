@@ -214,3 +214,4 @@ func (a *App) GetFileDiff(path string) (diff string, error)
 - **仅当前工作区**：不追踪工作区外路径
 - **平台**：优先支持 Windows，后续扩展到 macOS/Linux
 - **快照生命周期**：切换工作区时清理旧快照，新建快照目录
+
