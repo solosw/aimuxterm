@@ -1,14 +1,38 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useTerminalStore } from '../stores/terminal'
 import { useWorkspaceStore } from '../stores/workspace'
 import TerminalView from './TerminalView.vue'
+import BrowserPanel from './BrowserPanel.vue'
 import SSHConnectDialog from './SSHConnectDialog.vue'
+
+const props = defineProps<{ browserOpen: boolean }>()
+const emit = defineEmits<{ (e: 'close-browser'): void }>()
 
 const store = useTerminalStore()
 const ws = useWorkspaceStore()
 const showSSHDialog = ref(false)
 const showCmdInput = ref(false)
+const activeView = ref<'terminal' | 'browser'>('terminal')
+
+watch(() => props.browserOpen, open => {
+  if (open) activeView.value = 'browser'
+  else if (activeView.value === 'browser') activeView.value = 'terminal'
+})
+
+function selectTerminal(id: string) {
+  activeView.value = 'terminal'
+  store.setActive(id)
+}
+
+function selectBrowser() {
+  activeView.value = 'browser'
+}
+
+function closeBrowser() {
+  emit('close-browser')
+  activeView.value = 'terminal'
+}
 
 const gridCols = computed(() => {
   const n = store.tabs.length
@@ -25,12 +49,22 @@ const gridCols = computed(() => {
         v-for="tab in store.tabs"
         :key="tab.id"
         class="tab"
-        :class="{ active: tab.id === store.activeTabId && store.layoutMode === 'tabs' }"
-        @click="store.setActive(tab.id)"
+        :class="{ active: tab.id === store.activeTabId && activeView === 'terminal' && store.layoutMode === 'tabs' }"
+        @click="selectTerminal(tab.id)"
       >
         <span class="tab-type">></span>
         <span>{{ tab.title }}</span>
         <button class="tab-close" @click.stop="store.closeTab(tab.id)">×</button>
+      </div>
+      <div
+        v-if="browserOpen"
+        class="tab browser-tab"
+        :class="{ active: activeView === 'browser' }"
+        @click="selectBrowser"
+      >
+        <span class="tab-type">◉</span>
+        <span>浏览器</span>
+        <button class="tab-close" @click.stop="closeBrowser">×</button>
       </div>
       <button class="tab-new" @click="ws.showStartupPicker = true">+</button>
       <button class="tab-ssh" @click="showSSHDialog = true" title="SSH连接">&#x1F50C;</button>
@@ -52,13 +86,17 @@ const gridCols = computed(() => {
       </button>
     </div>
 
-    <div v-if="store.tabs.length === 0" class="no-tabs">
+    <div v-if="store.tabs.length === 0 && !browserOpen" class="no-tabs">
       <p v-if="store.error" class="error-msg">{{ store.error }}</p>
       <p v-else>点击 + 创建终端</p>
     </div>
 
+    <div v-if="browserOpen" v-show="activeView === 'browser'" class="tab-body">
+      <BrowserPanel @close="closeBrowser" />
+    </div>
+
     <!-- Grid layout -->
-    <div v-else-if="store.layoutMode === 'grid'" class="grid-body" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
+    <div v-if="activeView === 'terminal' && store.tabs.length > 0 && store.layoutMode === 'grid'" class="grid-body" :style="{ gridTemplateColumns: `repeat(${gridCols}, 1fr)` }">
       <div v-for="tab in store.tabs" :key="tab.id" class="grid-cell">
         <div class="grid-cell-header">
           <span class="grid-cell-title">{{ tab.title }}</span>
@@ -71,7 +109,7 @@ const gridCols = computed(() => {
     </div>
 
     <!-- Tab layout -->
-    <div v-else class="tab-body">
+    <div v-if="activeView === 'terminal' && store.tabs.length > 0 && store.layoutMode === 'tabs'" class="tab-body">
       <template v-for="tab in store.tabs" :key="tab.id">
         <div v-show="tab.id === store.activeTabId" class="tab-content">
           <TerminalView :tab-id="tab.id" :show-cmd-input="showCmdInput" />

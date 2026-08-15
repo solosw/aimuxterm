@@ -18,12 +18,24 @@ export function CloseTerminal(arg1) {
   return window['go']['main']['App']['CloseTerminal'](arg1);
 }
 
+export function CopyWorkspacePaths(arg1, arg2) {
+  return window['go']['main']['App']['CopyWorkspacePaths'](arg1, arg2);
+}
+
 export function CreateSSHTerminal(arg1) {
   return window['go']['main']['App']['CreateSSHTerminal'](arg1);
 }
 
 export function CreateTerminal() {
   return window['go']['main']['App']['CreateTerminal']();
+}
+
+export function CreateWorkspaceFile(arg1) {
+  return window['go']['main']['App']['CreateWorkspaceFile'](arg1);
+}
+
+export function CreateWorkspaceFolder(arg1) {
+  return window['go']['main']['App']['CreateWorkspaceFolder'](arg1);
 }
 
 export function DeleteWorkspaceFile(arg1) {
@@ -126,6 +138,14 @@ export function RemoveWorkspaceFromHistory(arg1) {
   return window['go']['main']['App']['RemoveWorkspaceFromHistory'](arg1);
 }
 
+export function RenameWorkspacePath(arg1, arg2) {
+  return window['go']['main']['App']['RenameWorkspacePath'](arg1, arg2);
+}
+
+export function ReplaceWorkspace(arg1, arg2, arg3) {
+  return window['go']['main']['App']['ReplaceWorkspace'](arg1, arg2, arg3);
+}
+
 export function ResizeTerminal(arg1, arg2, arg3) {
   return window['go']['main']['App']['ResizeTerminal'](arg1, arg2, arg3);
 }
@@ -164,6 +184,10 @@ export function SaveStartupCommands(arg1) {
 
 export function SaveTerminalSnapshots(arg1) {
   return window['go']['main']['App']['SaveTerminalSnapshots'](arg1);
+}
+
+export function SearchWorkspace(arg1, arg2) {
+  return window['go']['main']['App']['SearchWorkspace'](arg1, arg2);
 }
 
 export function SelectBackgroundImage() {

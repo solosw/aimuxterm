@@ -6,6 +6,7 @@ import RemoteWorkspaceDialog from './RemoteWorkspaceDialog.vue'
 const emit = defineEmits<{
   (e: 'open-appearance'): void
   (e: 'open-ai-settings'): void
+  (e: 'open-browser'): void
 }>()
 
 const ws = useWorkspaceStore()
@@ -108,6 +109,7 @@ async function removeHistory(path: string, e: Event) {
     <div class="bar-spacer"></div>
 
     <div class="bar-actions">
+      <button class="btn-bar" @click="emit('open-browser')" title="打开内置浏览器">浏览器</button>
       <button class="btn-bar" @click="emit('open-appearance')" title="外观设置">外观</button>
       <button class="btn-bar btn-bar-primary" @click="emit('open-ai-settings')" title="AI 配置">AI 配置</button>
     </div>

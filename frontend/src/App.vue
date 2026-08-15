@@ -22,6 +22,9 @@ const term = useTerminalStore()
 const showSettings = ref(false)
 const showAISettings = ref(false)
 const showAppearance = ref(false)
+const showBrowser = ref(false)
+const treeCollapsed = ref(false)
+const changesCollapsed = ref(false)
 const fc = useFileChangesStore()
 const appearance = useAppearanceStore()
 const aiCompletion = useAICompletionStore()
@@ -88,6 +91,10 @@ function onOpenAppearance() {
   showAppearance.value = true
 }
 
+function onOpenBrowser() {
+  showBrowser.value = true
+}
+
 onMounted(async () => {
   appearance.load()
   aiCompletion.load()
@@ -115,21 +122,22 @@ onMounted(async () => {
     <WorkspaceBar
       @open-appearance="onOpenAppearance"
       @open-ai-settings="onOpenAISettings"
+      @open-browser="onOpenBrowser"
     />
     <div class="main-area">
-      <FileTreePanel v-if="ws.hasWorkspace" :style="{ width: treeWidth + 'px' }" />
-      <div
-        v-if="ws.hasWorkspace"
-        class="resize-handle"
-        @mousedown="startResize('tree')"
-      ></div>
-      <TerminalPanel />
-      <div
-        v-if="ws.hasWorkspace"
-        class="resize-handle"
-        @mousedown="startResize('changes')"
-      ></div>
-      <FileChangesPanel v-if="ws.hasWorkspace" :style="{ width: changesWidth + 'px' }" />
+      <template v-if="ws.hasWorkspace">
+        <FileTreePanel v-if="!treeCollapsed" :style="{ width: treeWidth + 'px' }" />
+        <button v-if="treeCollapsed" class="collapsed-panel-tab left" title="展开文件目录" @click="treeCollapsed = false">文件目录 ›</button>
+        <div v-if="!treeCollapsed" class="resize-handle" @mousedown="startResize('tree')"></div>
+        <button v-if="!treeCollapsed" class="panel-toggle left" title="隐藏文件目录" @click="treeCollapsed = true">‹</button>
+      </template>
+      <TerminalPanel :browser-open="showBrowser" @close-browser="showBrowser = false" />
+      <template v-if="ws.hasWorkspace">
+        <button v-if="!changesCollapsed" class="panel-toggle right" title="隐藏文件变更" @click="changesCollapsed = true">›</button>
+        <div v-if="!changesCollapsed" class="resize-handle" @mousedown="startResize('changes')"></div>
+        <FileChangesPanel v-if="!changesCollapsed" :style="{ width: changesWidth + 'px' }" />
+        <button v-if="changesCollapsed" class="collapsed-panel-tab right" title="展开文件变更" @click="changesCollapsed = false">‹ 文件变更</button>
+      </template>
     </div>
     <FilePreviewPanel v-if="ws.hasWorkspace && ws.previewFiles.length > 0" />
     <StartupCommandPicker
@@ -183,6 +191,10 @@ onMounted(async () => {
 .resize-handle:hover {
   background: #58a6ff;
 }
+.panel-toggle { align-self: stretch; width: 18px; padding: 0; border: 0; background: var(--surface-bar); color: #8b949e; cursor: pointer; flex-shrink: 0; font-size: 16px; }
+.panel-toggle:hover { background: #30363d; color: #58a6ff; }
+.collapsed-panel-tab { align-self: stretch; width: 26px; padding: 8px 4px; border: 0; background: var(--surface-bar); color: #8b949e; cursor: pointer; flex-shrink: 0; font-size: 11px; line-height: 1.15; writing-mode: vertical-rl; }
+.collapsed-panel-tab:hover { background: #30363d; color: #58a6ff; }
 /* Background image layer. Fixed at z-index 0; content sits at z-index 1+.
    Image URL and opacity are set via :style from the appearance store —
    do not put large base64 data URLs into CSS custom properties. */

@@ -191,6 +191,13 @@ watch(activeFile, (path) => {
   if (path && !cache.value[path]) loadFile(path)
 }, { immediate: true })
 
+watch(() => ws.previewReloadVersion, () => {
+  for (const path of ws.previewReloadPaths) {
+    const state = cache.value[path]
+    if (!state?.isDirty) loadFile(path)
+  }
+})
+
 // ── Floating window: geometry, drag, resize ──
 const GEOM_KEY = 'preview-window-geometry'
 const MIN_W = 360

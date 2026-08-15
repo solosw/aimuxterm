@@ -12,9 +12,15 @@ export function ApplyAIConfigGroup(arg1:config.AIConfigGroup,arg2:string):Promis
 
 export function CloseTerminal(arg1:string):Promise<void>;
 
+export function CopyWorkspacePaths(arg1:Array<string>,arg2:string):Promise<void>;
+
 export function CreateSSHTerminal(arg1:main.SSHConfig):Promise<string>;
 
 export function CreateTerminal():Promise<string>;
+
+export function CreateWorkspaceFile(arg1:string):Promise<void>;
+
+export function CreateWorkspaceFolder(arg1:string):Promise<void>;
 
 export function DeleteWorkspaceFile(arg1:string):Promise<void>;
 
@@ -66,6 +72,10 @@ export function RemoveSSHConfig(arg1:string):Promise<void>;
 
 export function RemoveWorkspaceFromHistory(arg1:string):Promise<void>;
 
+export function RenameWorkspacePath(arg1:string,arg2:string):Promise<void>;
+
+export function ReplaceWorkspace(arg1:string,arg2:string,arg3:boolean):Promise<Array<string>>;
+
 export function ResizeTerminal(arg1:string,arg2:number,arg3:number):Promise<void>;
 
 export function RevertAll():Promise<void>;
@@ -85,6 +95,8 @@ export function SaveSSHConfig(arg1:config.SSHConfig):Promise<void>;
 export function SaveStartupCommands(arg1:Array<config.StartupCommand>):Promise<void>;
 
 export function SaveTerminalSnapshots(arg1:Array<config.TerminalSnapshot>):Promise<void>;
+
+export function SearchWorkspace(arg1:string,arg2:boolean):Promise<Array<main.WorkspaceSearchResult>>;
 
 export function SelectBackgroundImage():Promise<string>;
 

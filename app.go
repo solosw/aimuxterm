@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -25,13 +26,24 @@ import (
 	"aimuxterm/watcher"
 )
 
-
 // remoteFileEntry holds file metadata for remote workspaces.
 // Used for lightweight change detection without downloading file content.
 type remoteFileEntry struct {
 	path    string
 	size    int64
 	modTime time.Time
+}
+
+type WorkspaceSearchMatch struct {
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
+	Text   string `json:"text"`
+	Match  string `json:"match"`
+}
+
+type WorkspaceSearchResult struct {
+	Path    string                 `json:"path"`
+	Matches []WorkspaceSearchMatch `json:"matches"`
 }
 
 func (e remoteFileEntry) fingerprint() string {
@@ -1266,6 +1278,180 @@ func (a *App) SaveFile(relPath, content string) error {
 	return nil
 }
 
+func (a *App) SearchWorkspace(query string, matchCase bool) ([]WorkspaceSearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return []WorkspaceSearchResult{}, nil
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return nil, fmt.Errorf("未选择工作区")
+	}
+
+	paths := append([]string(nil), a.scannedFiles...)
+	sort.Strings(paths)
+	const maxSearchFiles = 200
+	const maxSearchMatches = 2000
+	results := make([]WorkspaceSearchResult, 0)
+	matchCount := 0
+	for _, relPath := range paths {
+		if len(results) >= maxSearchFiles || matchCount >= maxSearchMatches {
+			break
+		}
+		data, err := a.workspaceSearchFileContent(relPath)
+		if err != nil {
+			continue
+		}
+		matches := workspaceSearchMatches(string(data), query, matchCase, maxSearchMatches-matchCount)
+		if len(matches) == 0 {
+			continue
+		}
+		results = append(results, WorkspaceSearchResult{Path: relPath, Matches: matches})
+		matchCount += len(matches)
+	}
+	return results, nil
+}
+
+func (a *App) ReplaceWorkspace(query, replacement string, matchCase bool) ([]string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, fmt.Errorf("搜索内容不能为空")
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return nil, fmt.Errorf("未选择工作区")
+	}
+
+	paths := append([]string(nil), a.scannedFiles...)
+	sort.Strings(paths)
+	changed := make([]string, 0)
+	for _, relPath := range paths {
+		data, err := a.workspaceSearchFileContent(relPath)
+		if err != nil {
+			continue
+		}
+		content := string(data)
+		updated, count := workspaceReplaceAll(content, query, replacement, matchCase)
+		if count == 0 {
+			continue
+		}
+		if err := a.writeWorkspaceSearchFile(relPath, []byte(updated)); err != nil {
+			return nil, err
+		}
+		changed = append(changed, relPath)
+	}
+	if len(changed) == 0 {
+		return changed, nil
+	}
+	if a.isRemote {
+		for _, relPath := range changed {
+			data, err := a.workspaceSearchFileContent(relPath)
+			if err != nil {
+				return nil, err
+			}
+			if err := a.remoteWriteSnapshot(relPath, data); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := a.refreshWorkspaceAfterFileOperation(); err != nil {
+		return nil, err
+	}
+	if a.isRemote {
+		if err := a.remoteSaveManifest(); err != nil {
+			return nil, fmt.Errorf("更新清单失败: %w", err)
+		}
+	}
+	return changed, nil
+}
+
+func (a *App) workspaceSearchFileContent(relPath string) ([]byte, error) {
+	if a.isRemote {
+		return a.readRemoteFile(relPath)
+	}
+	return os.ReadFile(filepath.Join(a.workspace, filepath.FromSlash(relPath)))
+}
+
+func (a *App) writeWorkspaceSearchFile(relPath string, data []byte) error {
+	if a.isRemote {
+		if a.remoteSFTP == nil {
+			return fmt.Errorf("远程连接不可用")
+		}
+		remotePath := path.Join(a.remotePath, relPath)
+		file, err := a.remoteSFTP.Create(remotePath)
+		if err != nil {
+			return fmt.Errorf("写入远程文件失败: %w", err)
+		}
+		if _, err := file.Write(data); err != nil {
+			file.Close()
+			return fmt.Errorf("写入远程文件失败: %w", err)
+		}
+		return file.Close()
+	}
+	if err := os.WriteFile(filepath.Join(a.workspace, filepath.FromSlash(relPath)), data, 0644); err != nil {
+		return fmt.Errorf("保存文件失败: %w", err)
+	}
+	return nil
+}
+
+func workspaceSearchMatches(content, query string, matchCase bool, limit int) []WorkspaceSearchMatch {
+	needle := query
+	if !matchCase {
+		needle = strings.ToLower(needle)
+	}
+	matches := make([]WorkspaceSearchMatch, 0)
+	lineNumber := 1
+	for _, line := range strings.Split(content, "\n") {
+		searchLine := line
+		if !matchCase {
+			searchLine = strings.ToLower(line)
+		}
+		from := 0
+		for {
+			index := strings.Index(searchLine[from:], needle)
+			if index < 0 {
+				break
+			}
+			index += from
+			matches = append(matches, WorkspaceSearchMatch{Line: lineNumber, Column: len([]rune(line[:index])) + 1, Text: line, Match: line[index : index+len(query)]})
+			if len(matches) >= limit {
+				return matches
+			}
+			from = index + len(needle)
+		}
+		lineNumber++
+	}
+	return matches
+}
+
+func workspaceReplaceAll(content, query, replacement string, matchCase bool) (string, int) {
+	if matchCase {
+		count := strings.Count(content, query)
+		return strings.ReplaceAll(content, query, replacement), count
+	}
+	lowerContent := strings.ToLower(content)
+	lowerQuery := strings.ToLower(query)
+	var result strings.Builder
+	count, from := 0, 0
+	for {
+		index := strings.Index(lowerContent[from:], lowerQuery)
+		if index < 0 {
+			result.WriteString(content[from:])
+			break
+		}
+		index += from
+		result.WriteString(content[from:index])
+		result.WriteString(replacement)
+		from = index + len(query)
+		count++
+	}
+	return result.String(), count
+}
+
 func (a *App) DeleteWorkspaceFile(relPath string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1280,8 +1466,8 @@ func (a *App) DeleteWorkspaceFile(relPath string) error {
 		if a.remoteSFTP == nil {
 			return fmt.Errorf("远程连接不可用")
 		}
-		if err := a.remoteSFTP.Remove(path.Join(a.remotePath, relPath)); err != nil {
-			return fmt.Errorf("删除远程文件失败: %w", err)
+		if err := a.remoteSFTP.RemoveAll(path.Join(a.remotePath, relPath)); err != nil {
+			return fmt.Errorf("删除远程文件或文件夹失败: %w", err)
 		}
 		entries, err := a.listRemoteFiles(a.remoteSFTP, a.remotePath)
 		if err != nil {
@@ -1292,8 +1478,8 @@ func (a *App) DeleteWorkspaceFile(relPath string) error {
 		a.emitChanges()
 		return nil
 	}
-	if err := os.Remove(filepath.Join(a.workspace, relPath)); err != nil {
-		return fmt.Errorf("删除文件失败: %w", err)
+	if err := os.RemoveAll(filepath.Join(a.workspace, relPath)); err != nil {
+		return fmt.Errorf("删除文件或文件夹失败: %w", err)
 	}
 	a.refreshScanLocked()
 	a.emitChanges()
@@ -1369,6 +1555,292 @@ func (a *App) UploadWorkspaceFiles(targetDir string) error {
 	}
 	a.emitChanges()
 	return nil
+}
+
+func (a *App) workspaceRelativePath(relPath string, allowRoot bool) (string, error) {
+	relPath = filepath.ToSlash(filepath.Clean(relPath))
+	if relPath == "." && allowRoot {
+		return "", nil
+	}
+	if relPath == "." || strings.HasPrefix(relPath, "../") || filepath.IsAbs(relPath) {
+		return "", fmt.Errorf("无效的工作区路径")
+	}
+	return relPath, nil
+}
+
+func (a *App) refreshWorkspaceAfterFileOperation() error {
+	if a.isRemote {
+		entries, err := a.listRemoteFiles(a.remoteSFTP, a.remotePath)
+		if err != nil {
+			return err
+		}
+		a.scannedRemoteEntries = entries
+		a.scannedFiles = entriesToPaths(entries)
+	} else {
+		a.refreshScanLocked()
+	}
+	a.emitChanges()
+	return nil
+}
+
+// CreateWorkspaceFile creates an empty file relative to the current workspace.
+func (a *App) CreateWorkspaceFile(relPath string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	relPath, err := a.workspaceRelativePath(relPath, false)
+	if err != nil {
+		return err
+	}
+	if a.isRemote {
+		if a.remoteSFTP == nil {
+			return fmt.Errorf("远程连接不可用")
+		}
+		fullPath := path.Join(a.remotePath, relPath)
+		if _, err := a.remoteSFTP.Stat(fullPath); err == nil {
+			return fmt.Errorf("文件已存在")
+		}
+		if err := a.remoteSFTP.MkdirAll(path.Dir(fullPath)); err != nil {
+			return fmt.Errorf("创建远程目录失败: %w", err)
+		}
+		f, err := a.remoteSFTP.Create(fullPath)
+		if err != nil {
+			return fmt.Errorf("创建远程文件失败: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+		return a.refreshWorkspaceAfterFileOperation()
+	}
+	fullPath := filepath.Join(a.workspace, relPath)
+	if _, err := os.Stat(fullPath); err == nil {
+		return fmt.Errorf("文件已存在")
+	}
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+		return fmt.Errorf("创建目录失败: %w", err)
+	}
+	if err := os.WriteFile(fullPath, nil, 0644); err != nil {
+		return fmt.Errorf("创建文件失败: %w", err)
+	}
+	return a.refreshWorkspaceAfterFileOperation()
+}
+
+// CreateWorkspaceFolder creates a folder relative to the current workspace.
+func (a *App) CreateWorkspaceFolder(relPath string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	relPath, err := a.workspaceRelativePath(relPath, false)
+	if err != nil {
+		return err
+	}
+	if a.isRemote {
+		if a.remoteSFTP == nil {
+			return fmt.Errorf("远程连接不可用")
+		}
+		fullPath := path.Join(a.remotePath, relPath)
+		if _, err := a.remoteSFTP.Stat(fullPath); err == nil {
+			return fmt.Errorf("文件夹已存在")
+		}
+		if err := a.remoteSFTP.MkdirAll(fullPath); err != nil {
+			return fmt.Errorf("创建远程文件夹失败: %w", err)
+		}
+		return a.refreshWorkspaceAfterFileOperation()
+	}
+	fullPath := filepath.Join(a.workspace, relPath)
+	if _, err := os.Stat(fullPath); err == nil {
+		return fmt.Errorf("文件夹已存在")
+	}
+	if err := os.MkdirAll(fullPath, 0755); err != nil {
+		return fmt.Errorf("创建文件夹失败: %w", err)
+	}
+	return a.refreshWorkspaceAfterFileOperation()
+}
+
+// RenameWorkspacePath renames one file or folder.
+func (a *App) RenameWorkspacePath(oldPath, newPath string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	oldPath, err := a.workspaceRelativePath(oldPath, false)
+	if err != nil {
+		return err
+	}
+	newPath, err = a.workspaceRelativePath(newPath, false)
+	if err != nil {
+		return err
+	}
+	if oldPath == newPath {
+		return nil
+	}
+	if a.isRemote {
+		if a.remoteSFTP == nil {
+			return fmt.Errorf("远程连接不可用")
+		}
+		from, to := path.Join(a.remotePath, oldPath), path.Join(a.remotePath, newPath)
+		if _, err := a.remoteSFTP.Stat(to); err == nil {
+			return fmt.Errorf("目标路径已存在")
+		}
+		if err := a.remoteSFTP.MkdirAll(path.Dir(to)); err != nil {
+			return err
+		}
+		if err := a.remoteSFTP.Rename(from, to); err != nil {
+			return fmt.Errorf("重命名远程路径失败: %w", err)
+		}
+		return a.refreshWorkspaceAfterFileOperation()
+	}
+	from, to := filepath.Join(a.workspace, oldPath), filepath.Join(a.workspace, newPath)
+	if _, err := os.Stat(to); err == nil {
+		return fmt.Errorf("目标路径已存在")
+	}
+	if err := os.MkdirAll(filepath.Dir(to), 0755); err != nil {
+		return err
+	}
+	if err := os.Rename(from, to); err != nil {
+		return fmt.Errorf("重命名路径失败: %w", err)
+	}
+	return a.refreshWorkspaceAfterFileOperation()
+}
+
+// CopyWorkspacePaths copies multiple local paths into targetDir. Existing targets are rejected.
+func (a *App) CopyWorkspacePaths(paths []string, targetDir string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	targetDir, err := a.workspaceRelativePath(targetDir, true)
+	if err != nil {
+		return err
+	}
+	for _, sourcePath := range paths {
+		sourcePath, err = a.workspaceRelativePath(sourcePath, false)
+		if err != nil {
+			return err
+		}
+		destinationPath := filepath.ToSlash(filepath.Join(targetDir, filepath.Base(sourcePath)))
+		if sourcePath == destinationPath || strings.HasPrefix(destinationPath+"/", sourcePath+"/") {
+			return fmt.Errorf("不能复制到自身或其子目录")
+		}
+		if a.isRemote {
+			destination := path.Join(a.remotePath, destinationPath)
+			if _, err := a.remoteSFTP.Stat(destination); err == nil {
+				return fmt.Errorf("目标路径已存在: %s", destinationPath)
+			}
+			if err := copyRemoteWorkspacePath(a.remoteSFTP, path.Join(a.remotePath, sourcePath), destination); err != nil {
+				return err
+			}
+			continue
+		}
+		destination := filepath.Join(a.workspace, destinationPath)
+		if _, err := os.Stat(destination); err == nil {
+			return fmt.Errorf("目标路径已存在: %s", destinationPath)
+		}
+		if err := copyWorkspacePath(filepath.Join(a.workspace, sourcePath), destination); err != nil {
+			return err
+		}
+	}
+	return a.refreshWorkspaceAfterFileOperation()
+}
+
+func copyRemoteWorkspacePath(client *sftp.Client, source, destination string) error {
+	info, err := client.Stat(source)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return copyRemoteWorkspaceFile(client, source, destination)
+	}
+	walker := client.Walk(source)
+	for walker.Step() {
+		if walker.Err() != nil {
+			return walker.Err()
+		}
+		currentInfo := walker.Stat()
+		if currentInfo == nil {
+			continue
+		}
+		rel, err := filepath.Rel(filepath.FromSlash(source), filepath.FromSlash(walker.Path()))
+		if err != nil {
+			return err
+		}
+		target := path.Join(destination, filepath.ToSlash(rel))
+		if currentInfo.IsDir() {
+			if err := client.MkdirAll(target); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := copyRemoteWorkspaceFile(client, walker.Path(), target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyRemoteWorkspaceFile(client *sftp.Client, source, destination string) error {
+	if err := client.MkdirAll(path.Dir(destination)); err != nil {
+		return err
+	}
+	input, err := client.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := client.Create(destination)
+	if err != nil {
+		return err
+	}
+	_, copyErr := io.Copy(output, input)
+	closeErr := output.Close()
+	if copyErr != nil {
+		return copyErr
+	}
+	return closeErr
+}
+
+func copyWorkspacePath(source, destination string) error {
+	info, err := os.Stat(source)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		data, err := os.ReadFile(source)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(destination), 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(destination, data, info.Mode())
+	}
+	return filepath.Walk(source, func(current string, currentInfo os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(source, current)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(destination, rel)
+		if currentInfo.IsDir() {
+			return os.MkdirAll(target, currentInfo.Mode())
+		}
+		data, err := os.ReadFile(current)
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		return os.WriteFile(target, data, currentInfo.Mode())
+	})
 }
 
 // ─── Terminal ────────────────────────────────────────

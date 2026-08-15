@@ -13,6 +13,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   const previewFiles = ref<string[]>([])
   const activePreviewFile = ref<string | null>(null)
+  const previewReloadVersion = ref(0)
+  const previewReloadPaths = ref<string[]>([])
   const showStartupPicker = ref(false)
   const snapshotProgress = ref<{ total: number; current: number } | null>(null)
 
@@ -34,6 +36,37 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     if (activePreviewFile.value === path) {
       activePreviewFile.value = previewFiles.value.length > 0 ? previewFiles.value[previewFiles.value.length - 1] : null
     }
+  }
+
+  function replacePreviewPath(oldPath: string, newPath: string, isDirectory = false) {
+    const prefix = oldPath.replace(/\\/g, '/').replace(/\/+$/, '')
+    const target = newPath.replace(/\\/g, '/').replace(/\/+$/, '')
+    const mapPath = (current: string) => {
+      const normalized = current.replace(/\\/g, '/')
+      if (normalized === prefix) return target
+      if (isDirectory && normalized.startsWith(prefix + '/')) return target + normalized.slice(prefix.length)
+      return current
+    }
+    const seen = new Set<string>()
+    previewFiles.value = previewFiles.value.map(mapPath).filter(path => {
+      if (seen.has(path)) return false
+      seen.add(path)
+      return true
+    })
+    if (activePreviewFile.value) activePreviewFile.value = mapPath(activePreviewFile.value)
+  }
+
+  function closePreviewPaths(paths: string[]) {
+    const normalized = paths.map(path => path.replace(/\\/g, '/').replace(/\/+$/, ''))
+    for (const path of [...previewFiles.value]) {
+      const current = path.replace(/\\/g, '/')
+      if (normalized.some(target => current === target || current.startsWith(target + '/'))) closePreviewFile(path)
+    }
+  }
+
+  function reloadPreviewFiles(paths: string[]) {
+    previewReloadPaths.value = paths.filter(path => previewFiles.value.includes(path))
+    if (previewReloadPaths.value.length) previewReloadVersion.value++
   }
 
   async function syncChanges() { const fc = useFileChangesStore(); await fc.refresh() }
@@ -86,8 +119,8 @@ export const useWorkspaceStore = defineStore('workspace', () => {
 
   return {
     info, history, remoteList, hasWorkspace,
-    previewFiles, activePreviewFile, openPreviewFile, closePreviewFile,
-    loadHistory, selectWorkspace, openWorkspace, openRemoteWorkspace, removeRemote,
+    previewFiles, activePreviewFile, previewReloadVersion, previewReloadPaths, openPreviewFile, closePreviewFile, replacePreviewPath, closePreviewPaths, reloadPreviewFiles,
+    syncChanges, loadHistory, selectWorkspace, openWorkspace, openRemoteWorkspace, removeRemote,
     openInNewWindow, removeFromHistory, refresh, refreshLocal, refreshRemote, loadRemoteDir,
     snapshotProgress, showStartupPicker, getAbsolutePath
   }
