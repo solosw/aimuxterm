@@ -85,7 +85,7 @@ function closeDiff() {
         @click="showDiff(f)"
         @dragstart="onDragStart($event, f.path)"
       >
-        <span class="file-icon">{{ getFileIcon(f.path) }}</span>
+        <img class="file-icon" :src="getFileIcon(f.path)" alt="" />
         <span class="status-badge">{{ statusLabel[f.status] }}</span>
         <span class="file-path">{{ f.path }}</span>
         <span class="diff-stats">
@@ -180,7 +180,7 @@ function closeDiff() {
 .status-added .status-badge { color: #4caf50; }
 .status-modified .status-badge { color: #ff9800; }
 .status-deleted .status-badge { color: #f44336; }
-.file-icon { flex-shrink: 0; font-size: 13px; }
+.file-icon { width: 16px; height: 16px; flex-shrink: 0; object-fit: contain; }
 .file-path {
   flex: 1;
   overflow: hidden;

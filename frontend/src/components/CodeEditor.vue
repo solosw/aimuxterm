@@ -5,6 +5,8 @@ import { loadGrammars, loadTheme } from 'monaco-volar'
 import * as onigasm from 'onigasm'
 import onigasmWasm from 'onigasm/lib/onigasm.wasm?url'
 import { useAICompletionStore } from '../stores/aiCompletion'
+import { useWorkspaceStore } from '../stores/workspace'
+import { changeLSPDocument, closeLSPDocument, openLSPDocument } from '../services/lsp'
 
 let vueLanguageSupport: Promise<void> | undefined
 
@@ -51,6 +53,8 @@ const editorRef = ref<HTMLElement>()
 const editor = shallowRef<monaco.editor.IStandaloneCodeEditor>()
 const model = shallowRef<monaco.editor.ITextModel>()
 const aiCompletion = useAICompletionStore()
+const workspace = useWorkspaceStore()
+let lspVersion = 1
 let changeSubscription: monaco.IDisposable | undefined
 let saveSubscription: monaco.IDisposable | undefined
 let completionAction: monaco.IDisposable | undefined
@@ -104,8 +108,10 @@ function getMonacoLanguage(language: string): string {
 }
 
 function getModelUri(): monaco.Uri {
-  const safePath = props.path.replace(/\\/g, '/') || `untitled-${Date.now()}.${props.language}`
-  modelUri = `inmemory://aimuxterm/${encodeURI(safePath)}`
+  const relativePath = props.path.replace(/\\/g, '/')
+  const workspacePath = workspace.info && !workspace.info.isRemote ? workspace.info.path.replace(/\\/g, '/') : ''
+  const safePath = workspacePath && relativePath ? `${workspacePath.replace(/\/+$/, '')}/${relativePath.replace(/^\/+/, '')}` : relativePath || `untitled-${Date.now()}.${props.language}`
+  modelUri = safePath.startsWith('/') ? `file://${encodeURI(safePath)}` : safePath.match(/^[a-z]:\//i) ? `file:///${encodeURI(safePath)}` : `inmemory://aimuxterm/${encodeURI(safePath)}`
   return monaco.Uri.parse(modelUri)
 }
 
@@ -255,6 +261,7 @@ onMounted(() => {
 
   changeSubscription = model.value.onDidChangeContent(() => {
     emit('update:modelValue', model.value?.getValue() || '')
+    if (model.value) void changeLSPDocument(getMonacoLanguage(props.language), model.value, ++lspVersion)
     scheduleCopilot()
   })
   saveSubscription = editor.value.addAction({
@@ -272,6 +279,7 @@ onMounted(() => {
   })
 
   configureInlineCompletion()
+  void openLSPDocument(getMonacoLanguage(props.language), model.value)
   if (getMonacoLanguage(props.language) === 'vue') {
     enableVueLanguageSupport(editor.value)
   }
@@ -306,10 +314,11 @@ onUnmounted(() => {
   completionController?.abort()
   inlineCompletionProvider?.dispose()
   changeSubscription?.dispose()
+  const currentModel = model.value
+  if (currentModel) void closeLSPDocument(getMonacoLanguage(props.language), currentModel)
   saveSubscription?.dispose()
   completionAction?.dispose()
   editor.value?.dispose()
-  const currentModel = model.value
   if (currentModel && currentModel.uri.toString() === modelUri) currentModel.dispose()
 })
 

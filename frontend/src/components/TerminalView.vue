@@ -124,15 +124,23 @@ function sendCommand() {
 
 function onDragOver(event: DragEvent) {
   event.preventDefault()
-  event.dataTransfer!.dropEffect = 'copy'
+  if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'
   isDragOver.value = true
 }
 function onDragLeave() { isDragOver.value = false }
 function onDrop(event: DragEvent) {
   event.preventDefault()
   isDragOver.value = false
-  const path = event.dataTransfer?.getData('text/plain')
-  if (path && !tab.value?.restored) store.writeToTerminal(props.tabId, path)
+  if (tab.value?.restored) return
+  const transfer = event.dataTransfer
+  const path = transfer?.getData('application/x-aimuxterm-file-path') || transfer?.getData('text/plain') || ''
+  if (path) store.writeToTerminal(props.tabId, quoteDroppedPath(path))
+}
+
+function quoteDroppedPath(path: string): string {
+  const normalized = path.replace(/^file:\/\//, '').replace(/^\/?([A-Za-z]):\//, '$1:/').replace(/\\/g, '/')
+  if (/\s|[()&;|<>]/.test(normalized)) return `"${normalized.replace(/"/g, '\\"')}"`
+  return normalized
 }
 
 onUnmounted(() => {

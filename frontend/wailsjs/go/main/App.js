@@ -70,6 +70,10 @@ export function GetFileDiff(arg1) {
   return window['go']['main']['App']['GetFileDiff'](arg1);
 }
 
+export function GetLSPStatus(arg1) {
+  return window['go']['main']['App']['GetLSPStatus'](arg1);
+}
+
 export function GetRemoteWorkspaces() {
   return window['go']['main']['App']['GetRemoteWorkspaces']();
 }
@@ -100,6 +104,10 @@ export function GetWorkspaceInfo() {
 
 export function ListRemoteDir(arg1) {
   return window['go']['main']['App']['ListRemoteDir'](arg1);
+}
+
+export function MoveWorkspacePaths(arg1, arg2) {
+  return window['go']['main']['App']['MoveWorkspacePaths'](arg1, arg2);
 }
 
 export function OpenInNewWindow(arg1) {
@@ -198,8 +206,24 @@ export function SelectWorkspace() {
   return window['go']['main']['App']['SelectWorkspace']();
 }
 
+export function SendLSPMessage(arg1, arg2) {
+  return window['go']['main']['App']['SendLSPMessage'](arg1, arg2);
+}
+
+export function StartLSP(arg1) {
+  return window['go']['main']['App']['StartLSP'](arg1);
+}
+
+export function StopLSP(arg1) {
+  return window['go']['main']['App']['StopLSP'](arg1);
+}
+
 export function UploadWorkspaceFiles(arg1) {
   return window['go']['main']['App']['UploadWorkspaceFiles'](arg1);
+}
+
+export function UploadWorkspacePaths(arg1, arg2) {
+  return window['go']['main']['App']['UploadWorkspacePaths'](arg1, arg2);
 }
 
 export function WriteToTerminal(arg1, arg2) {

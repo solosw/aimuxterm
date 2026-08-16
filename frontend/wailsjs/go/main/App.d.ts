@@ -3,6 +3,7 @@
 import {config} from '../models';
 import {main} from '../models';
 import {snapshot} from '../models';
+import {lsp} from '../models';
 
 export function AcceptAll():Promise<void>;
 
@@ -38,6 +39,8 @@ export function GetFileContent(arg1:string):Promise<string>;
 
 export function GetFileDiff(arg1:string):Promise<Record<string, string>>;
 
+export function GetLSPStatus(arg1:string):Promise<lsp.ServerInfo>;
+
 export function GetRemoteWorkspaces():Promise<Array<config.RemoteWorkspaceEntry>>;
 
 export function GetSSHConfigs():Promise<Array<config.SSHConfig>>;
@@ -53,6 +56,8 @@ export function GetWorkspaceHistory():Promise<Array<config.WorkspaceEntry>>;
 export function GetWorkspaceInfo():Promise<main.WorkspaceInfo>;
 
 export function ListRemoteDir(arg1:string):Promise<Array<main.RemoteDirEntry>>;
+
+export function MoveWorkspacePaths(arg1:Array<string>,arg2:string):Promise<void>;
 
 export function OpenInNewWindow(arg1:string):Promise<void>;
 
@@ -102,6 +107,14 @@ export function SelectBackgroundImage():Promise<string>;
 
 export function SelectWorkspace():Promise<main.WorkspaceInfo>;
 
+export function SendLSPMessage(arg1:string,arg2:string):Promise<void>;
+
+export function StartLSP(arg1:string):Promise<void>;
+
+export function StopLSP(arg1:string):Promise<void>;
+
 export function UploadWorkspaceFiles(arg1:string):Promise<void>;
+
+export function UploadWorkspacePaths(arg1:Array<string>,arg2:string):Promise<void>;
 
 export function WriteToTerminal(arg1:string,arg2:string):Promise<void>;

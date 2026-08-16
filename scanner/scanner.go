@@ -53,7 +53,9 @@ func Scan(workspace string) (*ScanResult, error) {
 		if ignore.Match(relPath) {
 			return nil
 		}
-		if isBinaryPath(path) || info.Size() > maxTextSize {
+		// Large files are displayed by name only. Avoid opening them just to
+		// inspect their contents during the workspace scan.
+		if info.Size() > maxTextSize || isBinaryPath(path) {
 			others = append(others, relPath)
 			return nil
 		}

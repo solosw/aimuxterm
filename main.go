@@ -11,6 +11,7 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
 // 快速排序
 
 func main() {
@@ -31,8 +32,11 @@ func main() {
 		},
 		BackgroundColour:         &options.RGBA{R: 22, G: 22, B: 24, A: 1},
 		EnableDefaultContextMenu: true,
-		OnStartup:                app.startup,
-		OnShutdown:               app.shutdown,
+		DragAndDrop: &options.DragAndDrop{
+			EnableFileDrop: true,
+		},
+		OnStartup:  app.startup,
+		OnShutdown: app.shutdown,
 		Bind: []interface{}{
 			app,
 		},

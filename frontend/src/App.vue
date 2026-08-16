@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { useWorkspaceStore } from './stores/workspace'
 import { useFileChangesStore } from './stores/fileChanges'
 import { useTerminalStore } from './stores/terminal'
@@ -16,6 +16,7 @@ import AIConfigSettings from './components/AIConfigSettings.vue'
 import AppearanceSettings from './components/AppearanceSettings.vue'
 import { useAppearanceStore } from './stores/appearance'
 import { useAICompletionStore } from './stores/aiCompletion'
+import { stopAllLSP } from './services/lsp'
 
 const ws = useWorkspaceStore()
 const term = useTerminalStore()
@@ -94,6 +95,10 @@ function onOpenAppearance() {
 function onOpenBrowser() {
   showBrowser.value = true
 }
+
+watch(() => ws.info?.path, (path, previousPath) => {
+  if (previousPath && path !== previousPath) void stopAllLSP()
+})
 
 onMounted(async () => {
   appearance.load()

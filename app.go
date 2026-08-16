@@ -20,6 +20,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"aimuxterm/config"
+	"aimuxterm/lsp"
 	"aimuxterm/scanner"
 	"aimuxterm/snapshot"
 	"aimuxterm/terminal"
@@ -162,6 +163,9 @@ type App struct {
 	scannedFiles         []string
 	scannedOtherFiles    []string
 	scannedRemoteEntries []remoteFileEntry
+	cachedChanges        []snapshot.FileChange
+	changesCached        bool
+	lspMgr               *lsp.Manager
 	mu                   sync.Mutex
 }
 
@@ -171,10 +175,16 @@ func NewApp() *App {
 		println("config store init failed:", err.Error())
 		store = nil
 	}
-	return &App{
+	app := &App{
 		termMgr:  terminal.NewManager(),
 		cfgStore: store,
 	}
+	app.lspMgr = lsp.NewManager(func(language string, body []byte) {
+		if app.ctx != nil {
+			runtime.EventsEmit(app.ctx, "lsp-message:"+language, string(body))
+		}
+	})
+	return app
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -193,6 +203,9 @@ func (a *App) OpenInNewWindow(path string) error {
 
 func (a *App) shutdown(ctx context.Context) {
 	a.termMgr.CloseAll()
+	if a.lspMgr != nil {
+		a.lspMgr.StopAll()
+	}
 	if a.fsw != nil {
 		a.fsw.Close()
 	}
@@ -268,6 +281,8 @@ func (a *App) closeRemote() {
 	a.remotePath = ""
 	a.remoteGitignore = nil
 	a.scannedRemoteEntries = nil
+	a.cachedChanges = nil
+	a.changesCached = false
 }
 
 // ─── Workspace ───────────────────────────────────────
@@ -296,6 +311,38 @@ func (a *App) SelectWorkspace() (*WorkspaceInfo, error) {
 	return a.OpenWorkspace(path)
 }
 
+func (a *App) GetLSPStatus(language string) lsp.ServerInfo {
+	if a.isRemote || a.workspace == "" || a.lspMgr == nil {
+		return lsp.ServerInfo{Language: language, Message: "LSP 仅支持本地工作区"}
+	}
+	return a.lspMgr.Status(language)
+}
+
+func (a *App) StartLSP(language string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.isRemote || a.workspace == "" {
+		return fmt.Errorf("LSP 仅支持本地工作区")
+	}
+	if a.lspMgr == nil {
+		return fmt.Errorf("LSP 管理器不可用")
+	}
+	return a.lspMgr.Start(language, a.workspace)
+}
+
+func (a *App) SendLSPMessage(language, message string) error {
+	if a.lspMgr == nil {
+		return fmt.Errorf("LSP 管理器不可用")
+	}
+	return a.lspMgr.Send(language, json.RawMessage(message))
+}
+
+func (a *App) StopLSP(language string) {
+	if a.lspMgr != nil {
+		a.lspMgr.Stop(language)
+	}
+}
+
 func (a *App) OpenWorkspace(path string) (*WorkspaceInfo, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -306,6 +353,8 @@ func (a *App) OpenWorkspace(path string) (*WorkspaceInfo, error) {
 	}
 
 	a.workspace = path
+	a.cachedChanges = nil
+	a.changesCached = false
 	ensureGitignore(path)
 	a.snapEng = snapshot.NewEngine(path)
 
@@ -960,13 +1009,21 @@ func (a *App) GetWorkspaceInfo() *WorkspaceInfo {
 	return a.makeWorkspaceInfo()
 }
 
-func (a *App) makeWorkspaceInfo() *WorkspaceInfo {
-	var changes []snapshot.FileChange
-	if a.isRemote {
-		changes = a.remoteChangedFiles()
-	} else {
-		changes = a.snapEng.ChangedFiles(a.scannedFiles)
+func (a *App) workspaceChangesLocked() []snapshot.FileChange {
+	if a.changesCached {
+		return a.cachedChanges
 	}
+	if a.isRemote {
+		a.cachedChanges = a.remoteChangedFiles()
+	} else {
+		a.cachedChanges = a.snapEng.ChangedFiles(a.scannedFiles)
+	}
+	a.changesCached = true
+	return a.cachedChanges
+}
+
+func (a *App) makeWorkspaceInfo() *WorkspaceInfo {
+	changes := a.workspaceChangesLocked()
 	name := a.workspace
 	for i := len(name) - 1; i >= 0; i-- {
 		if name[i] == '\\' || name[i] == '/' {
@@ -1000,12 +1057,9 @@ func (a *App) onFileChanged() {
 	if a.snapEng == nil {
 		return
 	}
-	var changes []snapshot.FileChange
-	if a.isRemote {
-		changes = a.remoteChangedFiles()
-	} else {
-		changes = a.snapEng.ChangedFiles(a.scannedFiles)
-	}
+	a.cachedChanges = nil
+	a.changesCached = false
+	changes := a.workspaceChangesLocked()
 	runtime.EventsEmit(a.ctx, "file-changes", changes)
 }
 
@@ -1017,10 +1071,7 @@ func (a *App) GetChangedFiles() []snapshot.FileChange {
 	if a.snapEng == nil {
 		return nil
 	}
-	if a.isRemote {
-		return a.remoteChangedFiles()
-	}
-	return a.snapEng.ChangedFiles(a.scannedFiles)
+	return a.workspaceChangesLocked()
 }
 
 func (a *App) AcceptAll() error {
@@ -1708,6 +1759,133 @@ func (a *App) RenameWorkspacePath(oldPath, newPath string) error {
 	return a.refreshWorkspaceAfterFileOperation()
 }
 
+func (a *App) MoveWorkspacePaths(paths []string, targetDir string) error {
+	return a.moveWorkspacePaths(paths, targetDir)
+}
+
+func (a *App) moveWorkspacePaths(paths []string, targetDir string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	targetDir, err := a.workspaceRelativePath(targetDir, true)
+	if err != nil {
+		return err
+	}
+	for _, sourcePath := range paths {
+		sourcePath, err = a.workspaceRelativePath(sourcePath, false)
+		if err != nil {
+			return err
+		}
+		destinationPath := filepath.ToSlash(filepath.Join(targetDir, filepath.Base(sourcePath)))
+		if sourcePath == destinationPath {
+			continue
+		}
+		if strings.HasPrefix(destinationPath+"/", sourcePath+"/") {
+			return fmt.Errorf("不能移动到自身或其子目录")
+		}
+		if a.isRemote {
+			destination := path.Join(a.remotePath, destinationPath)
+			if _, err := a.remoteSFTP.Stat(destination); err == nil {
+				return fmt.Errorf("目标路径已存在: %s", destinationPath)
+			}
+			if err := a.remoteSFTP.Rename(path.Join(a.remotePath, sourcePath), destination); err != nil {
+				return fmt.Errorf("移动远程文件失败: %w", err)
+			}
+			continue
+		}
+		destination := filepath.Join(a.workspace, filepath.FromSlash(destinationPath))
+		if _, err := os.Stat(destination); err == nil {
+			return fmt.Errorf("目标路径已存在: %s", destinationPath)
+		}
+		if err := os.Rename(filepath.Join(a.workspace, filepath.FromSlash(sourcePath)), destination); err != nil {
+			return fmt.Errorf("移动文件失败: %w", err)
+		}
+	}
+	return a.refreshWorkspaceAfterFileOperation()
+}
+
+func (a *App) UploadWorkspacePaths(sourcePaths []string, targetDir string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.workspace == "" || a.snapEng == nil {
+		return fmt.Errorf("未选择工作区")
+	}
+	targetDir, err := a.workspaceRelativePath(targetDir, true)
+	if err != nil {
+		return err
+	}
+	for _, sourcePath := range sourcePaths {
+		info, err := os.Stat(sourcePath)
+		if err != nil {
+			return fmt.Errorf("读取拖入路径失败: %w", err)
+		}
+		if !a.isRemote {
+			rel, err := filepath.Rel(a.workspace, sourcePath)
+			if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) {
+				return fmt.Errorf("不能上传工作区内的文件，请直接拖动以移动")
+			}
+		}
+		destinationPath := filepath.ToSlash(filepath.Join(targetDir, filepath.Base(sourcePath)))
+		if a.isRemote {
+			if _, err := a.remoteSFTP.Stat(path.Join(a.remotePath, destinationPath)); err == nil {
+				return fmt.Errorf("目标路径已存在: %s", destinationPath)
+			}
+			if err := uploadRemoteWorkspacePath(a.remoteSFTP, sourcePath, path.Join(a.remotePath, destinationPath), info); err != nil {
+				return err
+			}
+			continue
+		}
+		destination := filepath.Join(a.workspace, filepath.FromSlash(destinationPath))
+		if _, err := os.Stat(destination); err == nil {
+			return fmt.Errorf("目标路径已存在: %s", destinationPath)
+		}
+		if err := copyWorkspacePath(sourcePath, destination); err != nil {
+			return fmt.Errorf("上传文件失败: %w", err)
+		}
+	}
+	return a.refreshWorkspaceAfterFileOperation()
+}
+
+func uploadRemoteWorkspacePath(client *sftp.Client, source, destination string, info os.FileInfo) error {
+	if !info.IsDir() {
+		return copyLocalFileToRemote(client, source, destination)
+	}
+	return filepath.Walk(source, func(current string, currentInfo os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		rel, err := filepath.Rel(source, current)
+		if err != nil {
+			return err
+		}
+		target := path.Join(destination, filepath.ToSlash(rel))
+		if currentInfo.IsDir() {
+			return client.MkdirAll(target)
+		}
+		return copyLocalFileToRemote(client, current, target)
+	})
+}
+
+func copyLocalFileToRemote(client *sftp.Client, source, destination string) error {
+	if err := client.MkdirAll(path.Dir(destination)); err != nil {
+		return err
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, err := client.Create(destination)
+	if err != nil {
+		return err
+	}
+	defer output.Close()
+	_, err = io.Copy(output, input)
+	return err
+}
+
 // CopyWorkspacePaths copies multiple local paths into targetDir. Existing targets are rejected.
 func (a *App) CopyWorkspacePaths(paths []string, targetDir string) error {
 	a.mu.Lock()
@@ -2378,6 +2556,8 @@ func (a *App) refreshScanLocked() {
 		}
 		a.scannedRemoteEntries = entries
 		a.scannedFiles = entriesToPaths(entries)
+		a.cachedChanges = nil
+		a.changesCached = false
 		return
 	}
 	result, err := scanner.Scan(a.workspace)
@@ -2386,14 +2566,11 @@ func (a *App) refreshScanLocked() {
 	}
 	a.scannedFiles = result.Files
 	a.scannedOtherFiles = result.OtherFiles
+	a.cachedChanges = nil
+	a.changesCached = false
 }
 
 func (a *App) emitChanges() {
-	var changes []snapshot.FileChange
-	if a.isRemote {
-		changes = a.remoteChangedFiles()
-	} else {
-		changes = a.snapEng.ChangedFiles(a.scannedFiles)
-	}
+	changes := a.workspaceChangesLocked()
 	runtime.EventsEmit(a.ctx, "file-changes", changes)
 }

@@ -1,17 +1,20 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   CopyWorkspacePaths,
   CreateWorkspaceFile,
   CreateWorkspaceFolder,
   DeleteWorkspaceFile,
+  MoveWorkspacePaths,
   RenameWorkspacePath,
   ReplaceWorkspace,
   SearchWorkspace,
   UploadWorkspaceFiles,
+  UploadWorkspacePaths,
 } from '../../wailsjs/go/main/App'
 import { useWorkspaceStore } from '../stores/workspace'
-import { getFileIcon } from '../utils/fileIcon'
+import { getFileIcon, getFolderIcon } from '../utils/fileIcon'
+import { OnFileDrop, OnFileDropOff } from '../../wailsjs/runtime/runtime'
 
 const ws = useWorkspaceStore()
 
@@ -37,6 +40,8 @@ interface FlatNode {
   node: TreeNode
   depth: number
   padding: number
+  ancestorHasNext: boolean[]
+  hasNext: boolean
 }
 
 interface ClipboardState {
@@ -57,6 +62,9 @@ interface SearchResult {
 }
 
 const tree = ref<TreeNode[]>([])
+const pendingFiles = ref<string[]>([])
+const pendingOtherFiles = ref<string[]>([])
+const treeBuildScheduled = ref(false)
 const expanded = ref<Set<string>>(new Set())
 const selectedPaths = ref<Set<string>>(new Set())
 const lastSelectedIndex = ref<number | null>(null)
@@ -77,6 +85,8 @@ const searchResults = ref<SearchResult[]>([])
 const searching = ref(false)
 const replacing = ref(false)
 const searchError = ref('')
+const dragOverPath = ref<string | null>(null)
+const dropUploading = ref(false)
 
 const flattenedTree = computed(() => renderTree(tree.value))
 const searchMatchCount = computed(() => searchResults.value.reduce((total, result) => total + result.matches.length, 0))
@@ -148,6 +158,23 @@ function buildTree(files: string[], binaryFiles: string[] = []): TreeNode[] {
   binaryFiles.forEach(file => addPath(file, true))
   sortChildren(root.children!)
   return root.children!
+}
+
+function scheduleLocalTreeBuild(files: string[], otherFiles: string[]) {
+ const nextFiles = files
+ const nextOtherFiles = otherFiles
+ pendingFiles.value = nextFiles
+ pendingOtherFiles.value = nextOtherFiles
+ if (treeBuildScheduled.value) return
+ treeBuildScheduled.value = true
+ window.setTimeout(() => {
+  treeBuildScheduled.value = false
+  if (pendingFiles.value !== nextFiles || pendingOtherFiles.value !== nextOtherFiles) {
+   scheduleLocalTreeBuild(pendingFiles.value, pendingOtherFiles.value)
+   return
+  }
+  tree.value = buildTree(nextFiles, nextOtherFiles)
+ }, 0)
 }
 
 async function initRemoteTree() {
@@ -225,22 +252,27 @@ watch(() => ws.info, async info => {
   selectedPaths.value = new Set()
   lastSelectedIndex.value = null
   if (!info) {
+    pendingFiles.value = []
+    pendingOtherFiles.value = []
     tree.value = []
     return
   }
   if (info.isRemote) {
     await initRemoteTree()
   } else {
-    tree.value = buildTree(info.files || [], info.otherFiles || [])
+    scheduleLocalTreeBuild(info.files || [], info.otherFiles || [])
   }
 }, { immediate: true })
 
-function renderTree(nodes: TreeNode[], depth = 0): FlatNode[] {
+function renderTree(nodes: TreeNode[], depth = 0, ancestorHasNext: boolean[] = []): FlatNode[] {
   const result: FlatNode[] = []
-  for (const node of nodes) {
-    result.push({ node, depth, padding: depth * 14 + 8 })
-    if (node.isDir && isExpanded(node) && node.children) result.push(...renderTree(node.children, depth + 1))
-  }
+  nodes.forEach((node, index) => {
+    const hasNext = index < nodes.length - 1
+    result.push({ node, depth, padding: depth * 18 + 8, ancestorHasNext, hasNext })
+    if (node.isDir && isExpanded(node) && node.children) {
+      result.push(...renderTree(node.children, depth + 1, [...ancestorHasNext, hasNext]))
+    }
+  })
   return result
 }
 
@@ -295,14 +327,107 @@ function handleClick(node: TreeNode, event: MouseEvent) {
 }
 
 function onDragStart(event: DragEvent, node: TreeNode) {
-  if (node.isDir) return
-  event.dataTransfer?.setData('text/plain', ws.getAbsolutePath(node.path))
-  if (event.dataTransfer) event.dataTransfer.effectAllowed = 'copy'
+  if (node.name === '..') return
+  if (!isSelected(node)) selectNode(node)
+  const paths = operationNodes.value.length ? operationNodes.value.map(item => item.path) : [node.path]
+  const absolutePath = ws.getAbsolutePath(paths[0])
+  const transfer = event.dataTransfer
+  if (!transfer) return
+  transfer.setData('text/plain', absolutePath)
+  transfer.setData('text/uri-list', `file://${absolutePath.replace(/\\/g, '/')}`)
+  transfer.setData('application/x-aimuxterm-file-path', absolutePath)
+  transfer.setData('application/x-aimuxterm-workspace-paths', JSON.stringify(paths))
+  transfer.effectAllowed = 'copyMove'
 }
 
+function dropTargetDir(node?: TreeNode): string {
+  return node?.isDir ? node.path : ''
+}
+
+function onDragOver(event: DragEvent, node?: TreeNode) {
+  event.preventDefault()
+  event.stopPropagation()
+  const types = Array.from(event.dataTransfer?.types || [])
+  if (!types.includes('application/x-aimuxterm-workspace-paths') && !types.includes('Files')) return
+  if (event.dataTransfer) event.dataTransfer.dropEffect = types.includes('application/x-aimuxterm-workspace-paths') ? 'move' : 'copy'
+  dragOverPath.value = dropTargetDir(node)
+}
+
+function onDragLeave(event: DragEvent, node?: TreeNode) {
+  if (event.currentTarget !== event.target) return
+  const target = dropTargetDir(node)
+  if (dragOverPath.value === target) dragOverPath.value = null
+}
+
+async function moveDroppedPaths(paths: string[], targetDir: string) {
+  if (!paths.length || dropUploading.value) return
+  dropUploading.value = true
+  actionError.value = ''
+  try {
+    await MoveWorkspacePaths(paths, targetDir)
+    const nodeMap = new Map(flattenedTree.value.map(item => [item.node.path, item.node]))
+    for (const sourcePath of paths) {
+      const node = nodeMap.get(sourcePath)
+      const newPath = joinPath(targetDir, sourcePath.split('/').pop() || sourcePath)
+      ws.replacePreviewPath(sourcePath, newPath, Boolean(node?.isDir))
+    }
+    await refreshTree()
+  } catch (error: any) {
+    actionError.value = error?.message || String(error)
+  } finally {
+    dropUploading.value = false
+  }
+}
+
+async function uploadDroppedPaths(paths: string[], targetDir: string) {
+  if (!paths.length || dropUploading.value) return
+  dropUploading.value = true
+  actionError.value = ''
+  try {
+    await UploadWorkspacePaths(paths, targetDir)
+    await refreshTree()
+  } catch (error: any) {
+    actionError.value = error?.message || String(error)
+  } finally {
+    dropUploading.value = false
+  }
+}
+
+function onDrop(event: DragEvent, node?: TreeNode) {
+  event.preventDefault()
+  event.stopPropagation()
+  const targetDir = dropTargetDir(node)
+  dragOverPath.value = null
+  const internalPaths = event.dataTransfer?.getData('application/x-aimuxterm-workspace-paths')
+  if (internalPaths) {
+    try {
+      void moveDroppedPaths(JSON.parse(internalPaths), targetDir)
+    } catch {
+      actionError.value = '读取拖放文件失败'
+    }
+  }
+}
+
+function externalDropTarget(x: number, y: number): string | null {
+  const element = document.elementFromPoint(x, y)
+  if (!element?.closest('.file-tree-panel')) return null
+  const treeNode = element.closest<HTMLElement>('[data-tree-path]')
+  const path = treeNode?.dataset.treePath
+  const node = path ? flattenedTree.value.find(item => item.node.path === path)?.node : undefined
+  return dropTargetDir(node)
+}
+
+onMounted(() => {
+  OnFileDrop((x, y, paths) => {
+    const targetDir = externalDropTarget(x, y)
+    if (ws.hasWorkspace && targetDir !== null) void uploadDroppedPaths(paths, targetDir)
+  }, false)
+})
+onBeforeUnmount(() => OnFileDropOff())
+
 function getIcon(node: TreeNode): string {
-  if (node.name === '..') return '↩'
-  if (node.isDir) return node.loading ? '⌛' : isExpanded(node) ? '📂' : '📁'
+  if (node.name === '..') return getFolderIcon(node.name, true)
+  if (node.isDir) return getFolderIcon(node.name, isExpanded(node))
   return getFileIcon(node.name)
 }
 
@@ -440,7 +565,7 @@ async function deleteSelection() {
       <button class="tree-action" title="上传文件" @click.stop="uploadFiles()">上传</button>
       <button class="tree-action icon-action" title="刷新文件目录" @click.stop="refreshTree">↻</button>
     </div>
-    <div class="tree-body">
+    <div class="tree-body" @dragover="onDragOver($event)" @dragleave="onDragLeave($event)" @drop="onDrop($event)">
       <div v-if="searchOpen" class="workspace-search" @click.stop>
         <div class="search-fields">
           <input v-model="searchQuery" placeholder="搜索工作区" @keydown.enter.prevent="runSearch" />
@@ -463,6 +588,7 @@ async function deleteSelection() {
           </div>
         </div>
       </div>
+      <div v-if="dropUploading" class="tree-drop-status">正在上传或移动文件…</div>
       <div v-if="actionError" class="tree-error">{{ actionError }}</div>
       <div v-if="createMode" class="tree-inline-editor create-editor">
         <span>{{ createMode === 'file' ? '新建文件' : '新建文件夹' }}</span>
@@ -474,15 +600,41 @@ async function deleteSelection() {
         v-for="item in flattenedTree"
         :key="item.node.path"
         class="tree-node"
-        :class="{ 'is-binary': item.node.isBinary, selected: isSelected(item.node) }"
-        :style="{ paddingLeft: item.padding + 'px' }"
-        :draggable="!item.node.isDir"
+        :draggable="item.node.name !== '..'"
+        :data-tree-path="item.node.path"
+        :class="{ 'is-binary': item.node.isBinary, selected: isSelected(item.node), 'drop-target': item.node.isDir && dragOverPath === item.node.path }"
         :title="item.node.isBinary ? item.node.name + ' - 二进制文件，不加载内容' : item.node.name"
         @click.stop="handleClick(item.node, $event)"
         @contextmenu="openContextMenu($event, item.node)"
         @dragstart="onDragStart($event, item.node)"
+        @dragover="onDragOver($event, item.node)"
+        @dragleave="onDragLeave($event, item.node)"
+        @drop="onDrop($event, item.node)"
       >
-        <span class="node-icon">{{ getIcon(item.node) }}</span>
+        <span class="tree-guides" aria-hidden="true">
+          <i
+            v-for="(hasNext, level) in item.ancestorHasNext"
+            v-show="hasNext"
+            :key="level"
+            class="tree-guide"
+            :style="{ left: (level * 18 + 8) + 'px' }"
+          ></i>
+          <i
+            v-if="item.depth > 0"
+            class="tree-branch"
+            :class="{ 'is-last': !item.hasNext }"
+            :style="{ left: ((item.depth - 1) * 18 + 8) + 'px' }"
+          ></i>
+        </span>
+        <button
+          v-if="item.node.isDir"
+          class="tree-chevron"
+          :class="{ expanded: isExpanded(item.node) }"
+          :title="isExpanded(item.node) ? '折叠文件夹' : '展开文件夹'"
+          @click.stop="toggleFolder(item.node)"
+        >›</button>
+        <span v-else class="tree-chevron-placeholder"></span>
+        <img class="node-icon" :src="getIcon(item.node)" alt="" />
         <input
           v-if="renamePath === item.node.path"
           ref="inputRef"
@@ -524,6 +676,7 @@ async function deleteSelection() {
 .icon-action { font-size: 13px; padding: 0 4px; }
 .tree-body { flex: 1; overflow: auto; }
 .tree-empty { padding: 20px 12px; color: #555; text-align: center; font-size: 12px; }
+.tree-drop-status { margin: 6px 8px; color: #58a6ff; font-size: 11px; }
 .tree-error { margin: 6px 8px; color: #f85149; font-size: 11px; line-height: 1.35; word-break: break-word; }
 .workspace-search { padding: 7px; border-bottom: 1px solid #30363d; background: #202124; }
 .search-fields { display: grid; gap: 5px; }
@@ -543,12 +696,22 @@ async function deleteSelection() {
 .search-result-match:hover, .search-result-path:hover { background: #30363d; }
 .search-result-match span { flex-shrink: 0; color: #8b949e; }
 .search-result-match code { min-width: 0; overflow: hidden; color: inherit; font: inherit; white-space: nowrap; text-overflow: ellipsis; }
-.tree-node { display: flex; align-items: center; gap: 4px; min-height: 24px; padding: 3px 8px; color: #aaa; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; user-select: none; }
+.tree-node { position: relative; display: flex; align-items: center; gap: 4px; min-height: 24px; padding: 3px 8px; color: #aaa; cursor: pointer; font-size: 12px; white-space: nowrap; overflow: hidden; user-select: none; }
 .tree-node:hover { background: #1e1e22; color: #ddd; }
 .tree-node.selected { background: #264f78; color: #fff; }
+.tree-guides { position: absolute; inset: 0; pointer-events: none; }
+.tree-guide { position: absolute; top: 0; bottom: 0; width: 1px; background: rgba(139, 148, 158, .28); }
+.tree-branch { position: absolute; top: 0; width: 18px; height: 50%; border-bottom: 1px solid rgba(139, 148, 158, .28); border-left: 1px solid rgba(139, 148, 158, .28); }
+.tree-branch:not(.is-last) { height: 100%; }
+.tree-chevron, .tree-chevron-placeholder { position: relative; z-index: 1; width: 14px; height: 18px; flex-shrink: 0; }
+.tree-chevron { border: 0; border-radius: 2px; background: transparent; color: #8b949e; cursor: pointer; font-size: 17px; line-height: 16px; transition: transform .12s ease, color .12s ease; }
+.tree-chevron:hover { background: #30363d; color: #c9d1d9; }
+.tree-chevron.expanded { transform: rotate(90deg); }
+.tree-node.selected .tree-chevron { color: #dbeafe; }
+.tree-node.drop-target { outline: 1px solid #58a6ff; outline-offset: -1px; background: rgba(56, 139, 253, .2); }
 .tree-node.is-binary { color: #6b6b73; }
 .tree-node.is-binary:hover { color: #8a8a93; }
-.node-icon { flex-shrink: 0; font-size: 11px; }
+.node-icon { width: 16px; height: 16px; flex-shrink: 0; object-fit: contain; }
 .node-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .node-loading { color: #666; font-size: 10px; }
 .tree-inline-editor { display: flex; align-items: center; gap: 6px; padding: 6px 8px; color: #8b949e; font-size: 11px; }

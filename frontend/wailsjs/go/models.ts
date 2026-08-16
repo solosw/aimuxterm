@@ -178,6 +178,29 @@ export namespace config {
 
 }
 
+export namespace lsp {
+	
+	export class ServerInfo {
+	    language: string;
+	    available: boolean;
+	    command: string;
+	    message: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ServerInfo(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.language = source["language"];
+	        this.available = source["available"];
+	        this.command = source["command"];
+	        this.message = source["message"];
+	    }
+	}
+
+}
+
 export namespace main {
 	
 	export class AIToolPaths {
