@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, computed, onMounted, onBeforeUnmount } from 'vue'
+import { ref, watch, computed, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import hljs from 'highlight.js'
 import 'highlight.js/styles/github-dark.css'
 import DiffView from './DiffView.vue'
@@ -9,7 +9,7 @@ import { BrowserOpenURL } from '../../wailsjs/runtime/runtime'
 import { useWorkspaceStore } from '../stores/workspace'
 import { useFileChangesStore } from '../stores/fileChanges'
 import { detectLang } from '../utils/detectLang'
-import { renderMarkdown, isSafeHref } from '../utils/renderMarkdown'
+import { renderMarkdown, renderMermaidBlocks, isSafeHref } from '../utils/renderMarkdown'
 
 const ws = useWorkspaceStore()
 const fc = useFileChangesStore()
@@ -38,6 +38,14 @@ const renderedHtml = computed(() => {
   if (!st || !isMarkdown.value) return ''
   return renderMarkdown(st.content)
 })
+const markdownRef = ref<HTMLElement | null>(null)
+
+watch([renderedHtml, () => activeState.value?.showRendered], async () => {
+  await nextTick()
+  const root = markdownRef.value
+  if (!root || !activeState.value?.showRendered) return
+  await renderMermaidBlocks(root)
+}, { flush: 'post' })
 
 function isMarkdownPath(path: string): boolean {
   return detectLang(path) === 'markdown'
@@ -380,6 +388,12 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
       <template v-else>
         <div class="preview-toolbar">
           <span class="preview-path">{{ activeFile }}</span>
+          <button
+            v-if="isMarkdown"
+            class="btn-md"
+            :class="{ active: activeState?.showRendered }"
+            @click="toggleRendered"
+          >{{ activeState?.showRendered ? '看源码' : '看渲染' }}</button>
           <template v-if="activeState?.isEditing">
             <span v-if="activeState?.isDirty" class="unsaved-indicator" title="有未保存的更改">●</span>
             <button class="btn-save" :disabled="!activeState?.isDirty" @click="handleSave">保存</button>
@@ -387,12 +401,6 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
             <span v-if="activeState?.saveError" class="save-error">{{ activeState.saveError }}</span>
           </template>
           <template v-else>
-            <button
-              v-if="isMarkdown"
-              class="btn-md"
-              :class="{ active: activeState?.showRendered }"
-              @click="toggleRendered"
-            >{{ activeState?.showRendered ? '看源码' : '看渲染' }}</button>
             <button class="btn-edit" @click="enterEdit">编辑</button>
             <button class="btn-diff" :class="{ active: isChanged }" @click="toggleDiff">
               {{ activeState?.showDiff ? '隐藏差异' : '查看差异' }}
@@ -400,7 +408,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
           </template>
         </div>
         <div v-if="activeState?.loading" class="preview-loading">加载中...</div>
-        <div v-else-if="activeState?.isEditing" class="editor-wrap">
+        <div v-else-if="activeState?.isEditing && !activeState?.showRendered" class="editor-wrap">
           <CodeEditor
             :model-value="activeState!.editContent"
             :language="detectLang(activeFile)"
@@ -421,6 +429,7 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
         <div
           v-else-if="isMarkdown && activeState?.showRendered"
           class="markdown-body"
+          ref="markdownRef"
           @click="onRenderedClick"
           v-html="renderedHtml"
         ></div>
@@ -679,6 +688,10 @@ onBeforeUnmount(() => window.removeEventListener('resize', onWindowResize))
   font-size: 12px;
   line-height: 1.5;
 }
+.markdown-body :deep(.mermaid-block) { margin: 0 0 14px; }
+.markdown-body :deep(.mermaid-diagram) { margin: 16px 0; overflow: auto; text-align: center; }
+.markdown-body :deep(.mermaid-diagram svg) { max-width: 100%; height: auto; }
+.markdown-body :deep(.mermaid-error) { color: #f85149; white-space: pre-wrap; }
 .markdown-body :deep(blockquote) {
   margin: 0 0 14px;
   padding: 0 0 0 14px;

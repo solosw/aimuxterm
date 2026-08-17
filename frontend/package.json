@@ -30,6 +30,7 @@
     "codemirror": "^6.0.2",
     "highlight.js": "^11.11.1",
     "markdown-it": "14.3.0",
+    "mermaid": "^11.4.1",
     "monaco-editor": "^0.39.0",
     "monaco-editor-copilot": "^0.1.8",
     "monaco-editor-core": "^0.39.0",
@@ -43,6 +44,7 @@
   },
   "devDependencies": {
     "@babel/types": "^7.18.10",
+    "@types/d3-dispatch": "^2.0.1",
     "@types/diff-match-patch": "^1.0.36",
     "@types/markdown-it": "14.1.2",
     "@vitejs/plugin-vue": "^3.0.3",
