@@ -269,6 +269,7 @@ export namespace main {
 	    fileCount: number;
 	    files: string[];
 	    otherFiles: string[];
+	    directories: string[];
 	    isRemote: boolean;
 	    changedFiles: snapshot.FileChange[];
 	
@@ -283,6 +284,7 @@ export namespace main {
 	        this.fileCount = source["fileCount"];
 	        this.files = source["files"];
 	        this.otherFiles = source["otherFiles"];
+	        this.directories = source["directories"];
 	        this.isRemote = source["isRemote"];
 	        this.changedFiles = this.convertValues(source["changedFiles"], snapshot.FileChange);
 	    }

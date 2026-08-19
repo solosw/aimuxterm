@@ -162,6 +162,7 @@ type App struct {
 
 	scannedFiles         []string
 	scannedOtherFiles    []string
+	scannedDirectories   []string
 	scannedRemoteEntries []remoteFileEntry
 	cachedChanges        []snapshot.FileChange
 	changesCached        bool
@@ -294,6 +295,7 @@ type WorkspaceInfo struct {
 	Files     []string `json:"files"`
 	// OtherFiles lists files shown in the tree but never loaded: binary or oversized.
 	OtherFiles   []string              `json:"otherFiles"`
+	Directories  []string              `json:"directories"`
 	IsRemote     bool                  `json:"isRemote"`
 	ChangedFiles []snapshot.FileChange `json:"changedFiles"`
 }
@@ -364,6 +366,7 @@ func (a *App) OpenWorkspace(path string) (*WorkspaceInfo, error) {
 	}
 	a.scannedFiles = result.Files
 	a.scannedOtherFiles = result.OtherFiles
+	a.scannedDirectories = result.Directories
 
 	if err := a.snapEng.LoadManifest(); err != nil {
 		return nil, fmt.Errorf("加载快照失败: %w", err)
@@ -1046,6 +1049,7 @@ func (a *App) makeWorkspaceInfo() *WorkspaceInfo {
 		FileCount:    len(a.scannedFiles) + len(a.scannedOtherFiles),
 		Files:        a.scannedFiles,
 		OtherFiles:   a.scannedOtherFiles,
+		Directories:  a.scannedDirectories,
 		IsRemote:     a.isRemote,
 		ChangedFiles: changes,
 	}
@@ -2566,6 +2570,7 @@ func (a *App) refreshScanLocked() {
 	}
 	a.scannedFiles = result.Files
 	a.scannedOtherFiles = result.OtherFiles
+	a.scannedDirectories = result.Directories
 	a.cachedChanges = nil
 	a.changesCached = false
 }

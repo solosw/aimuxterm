@@ -79,3 +79,20 @@ func TestScanKeepsGitignoredFilesOutOfBothLists(t *testing.T) {
 		t.Errorf("keep.go should be tracked; got %v", res.Files)
 	}
 }
+
+func TestScanListsEmptyDirectories(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "empty", "nested"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := Scan(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"empty", "empty/nested"} {
+		if !slices.Contains(res.Directories, want) {
+			t.Errorf("directories %v do not include %q", res.Directories, want)
+		}
+	}
+}

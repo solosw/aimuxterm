@@ -64,6 +64,7 @@ interface SearchResult {
 const tree = ref<TreeNode[]>([])
 const pendingFiles = ref<string[]>([])
 const pendingOtherFiles = ref<string[]>([])
+const pendingDirectories = ref<string[]>([])
 const treeBuildScheduled = ref(false)
 const expanded = ref<Set<string>>(new Set())
 const selectedPaths = ref<Set<string>>(new Set())
@@ -134,9 +135,9 @@ function entriesToTree(entries: RemoteEntry[]): TreeNode[] {
   }))
 }
 
-function buildTree(files: string[], binaryFiles: string[] = []): TreeNode[] {
+function buildTree(files: string[], binaryFiles: string[] = [], directories: string[] = []): TreeNode[] {
   const root: TreeNode = { name: '', path: '', isDir: true, children: [] }
-  const addPath = (file: string, isBinary: boolean) => {
+  const addPath = (file: string, isBinary: boolean, isDirectory = false) => {
     const parts = normalizePath(file).split('/')
     let current = root
     let currentPath = ''
@@ -146,34 +147,37 @@ function buildTree(files: string[], binaryFiles: string[] = []): TreeNode[] {
       const isLast = i === parts.length - 1
       let child = current.children!.find(item => item.name === part)
       if (!child) {
-        child = { name: part, path: currentPath, isDir: !isLast, children: [] }
-        if (isLast) child.isBinary = isBinary
+        child = { name: part, path: currentPath, isDir: !isLast || isDirectory, children: [] }
+        if (isLast && !isDirectory) child.isBinary = isBinary
         current.children!.push(child)
       }
-      if (!isLast) child.isDir = true
+      if (!isLast || isDirectory) child.isDir = true
       current = child
     }
   }
+  directories.forEach(directory => addPath(directory, false, true))
   files.forEach(file => addPath(file, false))
   binaryFiles.forEach(file => addPath(file, true))
   sortChildren(root.children!)
   return root.children!
 }
 
-function scheduleLocalTreeBuild(files: string[], otherFiles: string[]) {
+function scheduleLocalTreeBuild(files: string[], otherFiles: string[], directories: string[] = []) {
  const nextFiles = files
  const nextOtherFiles = otherFiles
+ const nextDirectories = directories
  pendingFiles.value = nextFiles
  pendingOtherFiles.value = nextOtherFiles
+ pendingDirectories.value = nextDirectories
  if (treeBuildScheduled.value) return
  treeBuildScheduled.value = true
  window.setTimeout(() => {
   treeBuildScheduled.value = false
-  if (pendingFiles.value !== nextFiles || pendingOtherFiles.value !== nextOtherFiles) {
-   scheduleLocalTreeBuild(pendingFiles.value, pendingOtherFiles.value)
+  if (pendingFiles.value !== nextFiles || pendingOtherFiles.value !== nextOtherFiles || pendingDirectories.value !== nextDirectories) {
+   scheduleLocalTreeBuild(pendingFiles.value, pendingOtherFiles.value, pendingDirectories.value)
    return
   }
-  tree.value = buildTree(nextFiles, nextOtherFiles)
+  tree.value = buildTree(nextFiles, nextOtherFiles, nextDirectories)
  }, 0)
 }
 
@@ -254,13 +258,14 @@ watch(() => ws.info, async info => {
   if (!info) {
     pendingFiles.value = []
     pendingOtherFiles.value = []
+    pendingDirectories.value = []
     tree.value = []
     return
   }
   if (info.isRemote) {
     await initRemoteTree()
   } else {
-    scheduleLocalTreeBuild(info.files || [], info.otherFiles || [])
+    scheduleLocalTreeBuild(info.files || [], info.otherFiles || [], info.directories || [])
   }
 }, { immediate: true })
 

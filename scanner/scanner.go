@@ -23,6 +23,8 @@ type ScanResult struct {
 	// binary files and files larger than maxTextSize. They are listed for
 	// display purposes only and their content is never loaded.
 	OtherFiles []string `json:"otherFiles"`
+	// Directories includes visible directories so empty folders appear in the tree.
+	Directories []string `json:"directories"`
 }
 
 // maxTextSize is the size limit above which a file is not snapshot-tracked.
@@ -35,18 +37,22 @@ func Scan(workspace string) (*ScanResult, error) {
 	ignore := loadGitignore(workspace)
 	var files []string
 	var others []string
+	var directories []string
 
 	err := filepath.Walk(workspace, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil // skip inaccessible files
 		}
+		relPath, _ := filepath.Rel(workspace, path)
 		if info.IsDir() {
 			if skipDirs[info.Name()] || strings.HasPrefix(info.Name(), ".") && info.Name() != ".gitignore" {
 				return filepath.SkipDir
 			}
+			if relPath != "." && !ignore.Match(relPath) {
+				directories = append(directories, filepath.ToSlash(relPath))
+			}
 			return nil
 		}
-		relPath, _ := filepath.Rel(workspace, path)
 		if relPath == "" {
 			return nil
 		}
@@ -63,7 +69,7 @@ func Scan(workspace string) (*ScanResult, error) {
 		return nil
 	})
 
-	return &ScanResult{Files: files, OtherFiles: others}, err
+	return &ScanResult{Files: files, OtherFiles: others, Directories: directories}, err
 }
 
 // gitignore is a simple .gitignore rule matcher.
