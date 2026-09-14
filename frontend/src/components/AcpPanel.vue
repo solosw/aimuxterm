@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useAcpStore, type AcpCommand, type AcpMediaItem, type AcpPlanItem, type AcpTimelineItem } from '../stores/acp'
-import { renderMarkdown, renderMermaidBlocks } from '../utils/renderMarkdown'
+import { renderMarkdown, renderMermaidBlocks, hydrateMarkdownImages } from '../utils/renderMarkdown'
 
 const props = defineProps<{ sessionId: string }>()
 const store = useAcpStore()
@@ -112,6 +112,7 @@ watch(
     await scrollToBottom()
     await nextTick()
     if (listEl.value) {
+      try { await hydrateMarkdownImages(listEl.value) } catch { /* ignore image hydrate errors */ }
       try { await renderMermaidBlocks(listEl.value) } catch { /* ignore mermaid errors */ }
     }
   },
@@ -839,6 +840,18 @@ const timelineItems = computed(() => (tab.value?.items || []).filter(it => it.ki
 .acp-msg.assistant .acp-bubble.md .acp-md-body :deep(video) {
   max-width: 100%;
   height: auto;
+}
+.acp-msg.assistant .acp-bubble.md .acp-md-body :deep(img) {
+  max-width: 100%;
+  height: auto;
+  display: block;
+  margin: 8px 0;
+  border-radius: 8px;
+  border: 1px solid rgba(139, 179, 232, .18);
+}
+.acp-msg.assistant .acp-bubble.md .acp-md-body :deep(img.aimux-md-img-error) {
+  opacity: 0.55;
+  min-height: 24px;
 }
 .acp-msg.assistant.streaming .acp-bubble.md {
   border-color: #238636;

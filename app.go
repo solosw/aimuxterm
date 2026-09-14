@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path"
@@ -1451,6 +1452,188 @@ func (a *App) GetFilePreviewData(relPath string) (string, error) {
 			return "", fmt.Errorf("读取文件失败: %w", err)
 		}
 	}
+	if int64(len(data)) > maxPreviewBinarySize {
+		return "", fmt.Errorf("文件过大，无法预览（限制 20MB）")
+	}
+	if mime == "image/svg+xml" && strings.Contains(strings.ToLower(string(data)), "<script") {
+		return "", fmt.Errorf("该 SVG 含有脚本，已拒绝预览")
+	}
+	return "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+}
+
+func parseFileURLPath(raw string) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("无效 file URL")
+	}
+	p := u.Path
+	if u.Host != "" && !strings.EqualFold(u.Host, "localhost") && u.Host != "127.0.0.1" {
+		p = "//" + u.Host + u.Path
+	}
+	if strings.HasPrefix(p, "/") && len(p) >= 3 && (p[2] == ':' || p[2] == '|') {
+		drive := p[1]
+		rest := p[3:]
+		if p[2] == '|' {
+			p = string(drive) + ":" + rest
+		} else {
+			p = string(drive) + ":" + rest
+		}
+	}
+	if p == "" {
+		return "", fmt.Errorf("无效 file URL")
+	}
+	return filepath.Clean(filepath.FromSlash(p)), nil
+}
+
+func isAbsoluteImagePath(raw string) bool {
+	if raw == "" {
+		return false
+	}
+	if filepath.IsAbs(raw) {
+		return true
+	}
+	// Windows drive path even when GOOS is not windows (remote may emit them).
+	if len(raw) >= 3 && ((raw[0] >= 'A' && raw[0] <= 'Z') || (raw[0] >= 'a' && raw[0] <= 'z')) && raw[1] == ':' && (raw[2] == '\\' || raw[2] == '/') {
+		return true
+	}
+	return strings.HasPrefix(raw, `\\`)
+}
+
+// GetImagePreviewData loads an image for markdown/ACP display.
+// Accepts workspace-relative paths, absolute paths, and file:// URLs.
+// http(s)/data:image URLs should be used directly by the frontend.
+func (a *App) GetImagePreviewData(rawPath string) (string, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	rawPath = strings.TrimSpace(strings.Trim(rawPath, `"'`))
+	if rawPath == "" {
+		return "", fmt.Errorf("空路径")
+	}
+	lower := strings.ToLower(rawPath)
+	if strings.HasPrefix(lower, "data:image/") {
+		if strings.Contains(lower, "svg") && strings.Contains(lower, "script") {
+			return "", fmt.Errorf("该 SVG 含有脚本，已拒绝预览")
+		}
+		return rawPath, nil
+	}
+	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
+		return "", fmt.Errorf("远程 URL 请由前端直接加载")
+	}
+
+	var (
+		absPath string
+		relPath string
+		useRel  bool
+	)
+	switch {
+	case strings.HasPrefix(lower, "file:"):
+		p, err := parseFileURLPath(rawPath)
+		if err != nil {
+			return "", err
+		}
+		absPath = p
+	case isAbsoluteImagePath(rawPath):
+		absPath = filepath.Clean(rawPath)
+	default:
+		cleaned, err := sanitizeWorkspaceRelPath(rawPath)
+		if err != nil {
+			return "", err
+		}
+		relPath = cleaned
+		useRel = true
+	}
+
+	checkPath := absPath
+	if useRel {
+		checkPath = relPath
+	}
+	mime, ok := previewMIME(checkPath)
+	if !ok || !strings.HasPrefix(mime, "image/") {
+		return "", fmt.Errorf("不支持预览该图片类型")
+	}
+
+	var data []byte
+	if useRel {
+		if a.workspace == "" {
+			return "", fmt.Errorf("未选择工作区")
+		}
+		if a.isRemote {
+			if a.remoteSFTP == nil {
+				return "", fmt.Errorf("远程连接不可用")
+			}
+			info, err := a.remoteSFTP.Stat(path.Join(a.remotePath, relPath))
+			if err != nil {
+				return "", fmt.Errorf("读取文件失败: %w", err)
+			}
+			if info.IsDir() {
+				return "", fmt.Errorf("不支持预览该文件类型")
+			}
+			if info.Size() > maxPreviewBinarySize {
+				return "", fmt.Errorf("文件过大，无法预览（限制 20MB）")
+			}
+			data, err = a.readRemoteFile(relPath)
+			if err != nil {
+				return "", fmt.Errorf("读取文件失败: %w", err)
+			}
+		} else {
+			full := filepath.Join(a.workspace, filepath.FromSlash(relPath))
+			info, err := os.Stat(full)
+			if err != nil {
+				return "", fmt.Errorf("读取文件失败: %w", err)
+			}
+			if info.IsDir() {
+				return "", fmt.Errorf("不支持预览该文件类型")
+			}
+			if info.Size() > maxPreviewBinarySize {
+				return "", fmt.Errorf("文件过大，无法预览（限制 20MB）")
+			}
+			data, err = os.ReadFile(full)
+			if err != nil {
+				return "", fmt.Errorf("读取文件失败: %w", err)
+			}
+		}
+	} else if a.isRemote {
+		if a.remoteSFTP == nil {
+			return "", fmt.Errorf("远程连接不可用")
+		}
+		remoteAbs := filepath.ToSlash(absPath)
+		info, err := a.remoteSFTP.Stat(remoteAbs)
+		if err != nil {
+			return "", fmt.Errorf("读取文件失败: %w", err)
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("不支持预览该文件类型")
+		}
+		if info.Size() > maxPreviewBinarySize {
+			return "", fmt.Errorf("文件过大，无法预览（限制 20MB）")
+		}
+		f, err := a.remoteSFTP.Open(remoteAbs)
+		if err != nil {
+			return "", fmt.Errorf("读取文件失败: %w", err)
+		}
+		defer f.Close()
+		data, err = io.ReadAll(io.LimitReader(f, maxPreviewBinarySize+1))
+		if err != nil {
+			return "", fmt.Errorf("读取文件失败: %w", err)
+		}
+	} else {
+		info, err := os.Stat(absPath)
+		if err != nil {
+			return "", fmt.Errorf("读取文件失败: %w", err)
+		}
+		if info.IsDir() {
+			return "", fmt.Errorf("不支持预览该文件类型")
+		}
+		if info.Size() > maxPreviewBinarySize {
+			return "", fmt.Errorf("文件过大，无法预览（限制 20MB）")
+		}
+		data, err = os.ReadFile(absPath)
+		if err != nil {
+			return "", fmt.Errorf("读取文件失败: %w", err)
+		}
+	}
+
 	if int64(len(data)) > maxPreviewBinarySize {
 		return "", fmt.Errorf("文件过大，无法预览（限制 20MB）")
 	}

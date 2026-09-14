@@ -10,7 +10,7 @@ import { useWorkspaceStore } from '../stores/workspace'
 import { useFileChangesStore } from '../stores/fileChanges'
 import { detectLang } from '../utils/detectLang'
 import { previewKind, type PreviewKind } from '../utils/previewKind'
-import { renderMarkdown, renderMermaidBlocks, isSafeHref } from '../utils/renderMarkdown'
+import { renderMarkdown, renderMermaidBlocks, hydrateMarkdownImages, isSafeHref } from '../utils/renderMarkdown'
 
 const ws = useWorkspaceStore()
 const fc = useFileChangesStore()
@@ -58,6 +58,7 @@ watch([renderedHtml, () => activeState.value?.showRendered], async () => {
   await nextTick()
   const root = markdownRef.value
   if (!root || !activeState.value?.showRendered) return
+  try { await hydrateMarkdownImages(root) } catch { /* ignore */ }
   await renderMermaidBlocks(root)
 }, { flush: 'post' })
 

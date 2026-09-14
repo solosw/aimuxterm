@@ -90,6 +90,10 @@ export function GetFilePreviewData(arg1) {
   return window['go']['main']['App']['GetFilePreviewData'](arg1);
 }
 
+export function GetImagePreviewData(arg1) {
+  return window['go']['main']['App']['GetImagePreviewData'](arg1);
+}
+
 export function GetLSPStatus(arg1) {
   return window['go']['main']['App']['GetLSPStatus'](arg1);
 }
