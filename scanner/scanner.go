@@ -77,6 +77,15 @@ func Scan(workspace string) (*ScanResult, error) {
 // gitignore is a simple .gitignore rule matcher.
 type Gitignore struct {
 	patterns []pattern
+	source   string
+}
+
+// Source returns the raw .gitignore text used to build this matcher.
+func (gi *Gitignore) Source() string {
+	if gi == nil {
+		return ""
+	}
+	return gi.source
 }
 
 // loadGitignore reads and parses the workspace .gitignore file.
@@ -96,7 +105,7 @@ type pattern struct {
 
 // ParseGitignore parses .gitignore content into a Gitignore matcher.
 func ParseGitignore(content string) *Gitignore {
-	gi := &Gitignore{}
+	gi := &Gitignore{source: content}
 	sc := bufio.NewScanner(strings.NewReader(content))
 	for sc.Scan() {
 		line := strings.TrimSpace(sc.Text())

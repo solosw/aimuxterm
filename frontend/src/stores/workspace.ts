@@ -26,6 +26,12 @@ export const useWorkspaceStore = defineStore('workspace', () => {
     }
   })
 
+  EventsOn('workspace-info', (data: any) => {
+    if (data && data.path) {
+      info.value = data as main.WorkspaceInfo
+    }
+  })
+
   function openPreviewFile(path: string) {
     if (!previewFiles.value.includes(path)) previewFiles.value.push(path)
     activePreviewFile.value = path

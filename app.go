@@ -962,19 +962,20 @@ func (a *App) remotePoll() {
 	if !a.isRemote || a.remoteSFTP == nil {
 		return
 	}
-	entries, err := a.listRemoteFiles(a.remoteSFTP, a.remotePath)
-	if err != nil {
-		return
-	}
 	oldFps := entriesToFingerprints(a.scannedRemoteEntries)
-	newFps := entriesToFingerprints(entries)
-	if fingerprintsEqual(oldFps, newFps) {
+	oldIgnore := ""
+	if a.remoteGitignore != nil {
+		oldIgnore = a.remoteGitignore.Source()
+	}
+	a.refreshScanLocked()
+	newFps := entriesToFingerprints(a.scannedRemoteEntries)
+	newIgnore := ""
+	if a.remoteGitignore != nil {
+		newIgnore = a.remoteGitignore.Source()
+	}
+	if fingerprintsEqual(oldFps, newFps) && oldIgnore == newIgnore {
 		return
 	}
-	a.scannedRemoteEntries = entries
-	a.scannedFiles = entriesToPaths(entries)
-	a.cachedChanges = nil
-	a.changesCached = false
 	a.emitChanges()
 }
 
@@ -993,6 +994,7 @@ func fingerprintsEqual(a, b map[string]string) bool {
 // remoteChangedFiles returns changes with line stats.
 func (a *App) remoteChangedFiles() []snapshot.FileChange {
 	changes := a.snapEng.ChangedFilesByHash(entriesToFingerprints(a.scannedRemoteEntries))
+	changes = filterIgnoredFileChanges(changes, a.remoteGitignore)
 	for i, c := range changes {
 		var oldData, newData []byte
 		switch c.Status {
@@ -1040,10 +1042,40 @@ func (a *App) workspaceChangesLocked() []snapshot.FileChange {
 	if a.isRemote {
 		a.cachedChanges = a.remoteChangedFiles()
 	} else {
-		a.cachedChanges = a.snapEng.ChangedFiles(a.scannedFiles)
+		a.cachedChanges = filterIgnoredFileChanges(
+			a.snapEng.ChangedFiles(a.scannedFiles),
+			loadWorkspaceGitignore(a.workspace),
+		)
 	}
 	a.changesCached = true
 	return a.cachedChanges
+}
+
+func loadWorkspaceGitignore(workspace string) *scanner.Gitignore {
+	if workspace == "" {
+		return &scanner.Gitignore{}
+	}
+	data, err := os.ReadFile(filepath.Join(workspace, ".gitignore"))
+	if err != nil {
+		return &scanner.Gitignore{}
+	}
+	return scanner.ParseGitignore(string(data))
+}
+
+// filterIgnoredFileChanges hides paths covered by .gitignore from the change list.
+// Snapshot baseline is left untouched so un-ignoring later can still compare correctly.
+func filterIgnoredFileChanges(changes []snapshot.FileChange, ignore *scanner.Gitignore) []snapshot.FileChange {
+	if ignore == nil || len(changes) == 0 {
+		return changes
+	}
+	out := make([]snapshot.FileChange, 0, len(changes))
+	for _, c := range changes {
+		if ignore.Match(c.Path) {
+			continue
+		}
+		out = append(out, c)
+	}
+	return out
 }
 
 func (a *App) makeWorkspaceInfo() *WorkspaceInfo {
@@ -1082,10 +1114,11 @@ func (a *App) onFileChanged() {
 	if a.snapEng == nil {
 		return
 	}
-	a.cachedChanges = nil
-	a.changesCached = false
+	// Rescan so .gitignore edits and deletes update scannedFiles/tree before diffing.
+	a.refreshScanLocked()
 	changes := a.workspaceChangesLocked()
 	runtime.EventsEmit(a.ctx, "file-changes", changes)
+	runtime.EventsEmit(a.ctx, "workspace-info", a.makeWorkspaceInfo())
 }
 
 // ─── File Changes ────────────────────────────────────
@@ -3118,6 +3151,13 @@ func (a *App) refreshScan() {
 
 func (a *App) refreshScanLocked() {
 	if a.isRemote {
+		if a.remoteSFTP != nil && a.remotePath != "" {
+			if giData, err := a.readRemoteFileRaw(path.Join(a.remotePath, ".gitignore")); err == nil {
+				a.remoteGitignore = scanner.ParseGitignore(string(giData))
+			} else {
+				a.remoteGitignore = &scanner.Gitignore{}
+			}
+		}
 		entries, err := a.listRemoteFiles(a.remoteSFTP, a.remotePath)
 		if err != nil {
 			return
@@ -3144,4 +3184,7 @@ func (a *App) emitChanges() {
 	a.changesCached = false
 	changes := a.workspaceChangesLocked()
 	runtime.EventsEmit(a.ctx, "file-changes", changes)
+	if a.ctx != nil && a.snapEng != nil && a.workspace != "" {
+		runtime.EventsEmit(a.ctx, "workspace-info", a.makeWorkspaceInfo())
+	}
 }
